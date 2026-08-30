@@ -110,6 +110,8 @@ def test_process_empty_extraction():
         is True
     )
 
+    assert result["extracted_data"] == {}
+
 
 def test_process_with_empty_raw_text():
     """
@@ -145,6 +147,8 @@ def test_process_with_empty_raw_text():
         result["classification"]["needs_review"]
         is True
     )
+
+    assert result["extracted_data"] == {}
 
 
 def test_processor_uses_injected_classifier():
@@ -189,3 +193,96 @@ def test_processor_uses_injected_classifier():
         result["classification"]["needs_review"]
         is False
     )
+
+    assert result["extracted_data"] == {}
+
+
+def test_process_native_pdf_extracts_gst_fields():
+    """
+    Verify that the complete pipeline extracts structured GST
+    fields from a native PDF.
+    """
+
+    processor = DocumentProcessor()
+
+    result = processor.process(
+        "mock_data/documents/test_gst_certificate.pdf"
+    )
+
+    assert result["status"] == "SUCCESS"
+
+    assert result["classification"]["document_type"] == (
+        "GST_CERTIFICATE"
+    )
+
+    assert result["extracted_data"] == {
+        "gstin": "27ABCDE1234F1Z5",
+        "legal_name": "ABC Industries Pvt Ltd",
+        "registration_status": "ACTIVE",
+    }
+
+
+def test_process_scanned_pdf_extracts_gst_fields():
+    """
+    Verify that the complete pipeline extracts structured GST
+    fields from an OCR-based scanned PDF.
+    """
+
+    processor = DocumentProcessor()
+
+    result = processor.process(
+        "mock_data/documents/scanned_gst_certificate.pdf"
+    )
+
+    assert result["status"] == "SUCCESS"
+
+    assert (
+        result["extraction"]["extraction_method"]
+        == "ocr_pdf"
+    )
+
+    assert result["classification"]["document_type"] == (
+        "GST_CERTIFICATE"
+    )
+
+    assert result["extracted_data"] == {
+        "gstin": "27ABCDE1234F1Z5",
+        "legal_name": "ABC Industries Pvt Ltd",
+        "registration_status": "ACTIVE",
+    }
+
+
+def test_unknown_document_has_empty_extracted_data():
+    """
+    Verify that an unknown document does not produce
+    structured fields.
+    """
+
+    class UnknownDocumentLoader:
+        def load_and_extract(self, file_path):
+            return {
+                "status": "SUCCESS",
+                "file_path": file_path,
+                "extraction_method": "native_pdf",
+                "raw_text": (
+                    "This is an unrelated document with "
+                    "no known indicators."
+                ),
+            }
+
+    processor = DocumentProcessor(
+        document_loader=UnknownDocumentLoader()
+    )
+
+    result = processor.process(
+        "mock_data/documents/unknown.pdf"
+    )
+
+    assert result["status"] == "SUCCESS"
+
+    assert (
+        result["classification"]["document_type"]
+        == "UNKNOWN"
+    )
+
+    assert result["extracted_data"] == {}

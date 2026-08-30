@@ -4,25 +4,33 @@ Document processing pipeline for BidSure AI.
 This service orchestrates:
 1. Document loading / text extraction
 2. Document classification
+3. Document field extraction
 
-It does not contain extraction or classification rules itself.
-Those responsibilities remain in DocumentLoader and
-DocumentClassifier.
+It does not contain extraction, classification, or field-extraction
+rules itself.
+
+Those responsibilities remain in:
+- DocumentLoader
+- DocumentClassifier
+- FieldExtractor
 """
 
 from .classifier import DocumentClassifier
 from .document_loader import DocumentLoader
+from .field_extractor import FieldExtractor
 
 
 class DocumentProcessor:
     """
-    Orchestrates document extraction and classification.
+    Orchestrates document extraction, classification,
+    and structured field extraction.
     """
 
     def __init__(
         self,
         document_loader: DocumentLoader | None = None,
         classifier: DocumentClassifier | None = None,
+        field_extractor: FieldExtractor | None = None,
     ):
         """
         Initialize the document processing pipeline.
@@ -42,9 +50,15 @@ class DocumentProcessor:
             else DocumentClassifier()
         )
 
+        self.field_extractor = (
+            field_extractor
+            if field_extractor is not None
+            else FieldExtractor()
+        )
+
     def process(self, file_path: str) -> dict:
         """
-        Process a document from file path to classification.
+        Process a document from file path to structured result.
 
         Pipeline:
 
@@ -56,14 +70,16 @@ class DocumentProcessor:
               ↓
             DocumentClassifier
               ↓
-            classification
+            FieldExtractor
+              ↓
+            result
 
         Args:
             file_path: Path to the document.
 
         Returns:
-            Dictionary containing extraction and classification
-            results.
+            Dictionary containing extraction,
+            classification, and extracted fields.
         """
 
         # ---------------------------------------------------------
@@ -86,7 +102,7 @@ class DocumentProcessor:
         )
 
         # If extraction failed or produced no text,
-        # classification cannot be performed.
+        # classification and field extraction cannot be performed.
         if (
             extraction_result.get("status") != "SUCCESS"
             or not raw_text.strip()
@@ -103,6 +119,7 @@ class DocumentProcessor:
                 ),
                 "extraction": extraction_result,
                 "classification": classification_result,
+                "extracted_data": {},
             }
 
         # ---------------------------------------------------------
@@ -114,7 +131,24 @@ class DocumentProcessor:
         )
 
         # ---------------------------------------------------------
-        # 4. Return combined pipeline result
+        # 4. Extract structured fields
+        # ---------------------------------------------------------
+
+        extracted_data = {}
+
+        document_type = classification_result.get(
+            "document_type"
+        )
+
+        if document_type == "GST_CERTIFICATE":
+            extracted_data = (
+                self.field_extractor.extract_gst_fields(
+                    raw_text
+                )
+            )
+
+        # ---------------------------------------------------------
+        # 5. Return combined pipeline result
         # ---------------------------------------------------------
 
         return {
@@ -122,4 +156,5 @@ class DocumentProcessor:
             "file_path": extraction_result["file_path"],
             "extraction": extraction_result,
             "classification": classification_result,
+            "extracted_data": extracted_data,
         }
