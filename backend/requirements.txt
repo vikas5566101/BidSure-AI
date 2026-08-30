@@ -1,2 +1,10 @@
 fastapi
 uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+python-dotenv
+pydantic-settings
+PyMuPDF
+
+python-multipart
+httpx2
