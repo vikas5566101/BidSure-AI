@@ -5,6 +5,7 @@ This service orchestrates:
 1. Document loading / text extraction
 2. Document classification
 3. Document field extraction
+4. Standard module-contract output
 
 It does not contain extraction, classification, or field-extraction
 rules itself.
@@ -23,7 +24,7 @@ from .field_extractor import FieldExtractor
 class DocumentProcessor:
     """
     Orchestrates document extraction, classification,
-    and structured field extraction.
+    structured field extraction, and contract formatting.
     """
 
     def __init__(
@@ -56,6 +57,29 @@ class DocumentProcessor:
             else FieldExtractor()
         )
 
+    def _build_contract_result(
+        self,
+        status: str,
+        document_type: str,
+        extracted_data: dict,
+        confidence: float,
+        errors: list[str],
+    ) -> dict:
+        """
+        Build the standard Document Intelligence module output.
+
+        This is the interface that other BidSure modules can consume.
+        """
+
+        return {
+            "success": status == "SUCCESS",
+            "processing_status": status,
+            "document_type": document_type,
+            "extracted_data": extracted_data,
+            "confidence": confidence,
+            "errors": errors,
+        }
+
     def process(self, file_path: str) -> dict:
         """
         Process a document from file path to structured result.
@@ -72,14 +96,14 @@ class DocumentProcessor:
               ↓
             FieldExtractor
               ↓
-            result
+            contract result
 
         Args:
             file_path: Path to the document.
 
         Returns:
-            Dictionary containing extraction,
-            classification, and extracted fields.
+            Dictionary containing detailed internal results and
+            the standard module-contract result.
         """
 
         # ---------------------------------------------------------
@@ -101,14 +125,28 @@ class DocumentProcessor:
             "",
         )
 
-        # If extraction failed or produced no text,
-        # classification and field extraction cannot be performed.
         if (
             extraction_result.get("status") != "SUCCESS"
             or not raw_text.strip()
         ):
             classification_result = (
                 self.classifier.classify("")
+            )
+
+            contract_result = self._build_contract_result(
+                status="FAIL",
+                document_type=classification_result.get(
+                    "document_type",
+                    "UNKNOWN",
+                ),
+                extracted_data={},
+                confidence=classification_result.get(
+                    "confidence",
+                    0.0,
+                ),
+                errors=[
+                    "Document text extraction failed"
+                ],
             )
 
             return {
@@ -120,6 +158,7 @@ class DocumentProcessor:
                 "extraction": extraction_result,
                 "classification": classification_result,
                 "extracted_data": {},
+                "contract": contract_result,
             }
 
         # ---------------------------------------------------------
@@ -148,7 +187,24 @@ class DocumentProcessor:
             )
 
         # ---------------------------------------------------------
-        # 5. Return combined pipeline result
+        # 5. Build standard module-contract result
+        # ---------------------------------------------------------
+
+        classification_confidence = classification_result.get(
+            "confidence",
+            0.0,
+        )
+
+        contract_result = self._build_contract_result(
+            status="SUCCESS",
+            document_type=document_type or "UNKNOWN",
+            extracted_data=extracted_data,
+            confidence=classification_confidence,
+            errors=[],
+        )
+
+        # ---------------------------------------------------------
+        # 6. Return complete result
         # ---------------------------------------------------------
 
         return {
@@ -157,4 +213,5 @@ class DocumentProcessor:
             "extraction": extraction_result,
             "classification": classification_result,
             "extracted_data": extracted_data,
+            "contract": contract_result,
         }

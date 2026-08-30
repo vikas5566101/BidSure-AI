@@ -286,3 +286,94 @@ def test_unknown_document_has_empty_extracted_data():
     )
 
     assert result["extracted_data"] == {}
+
+
+def test_document_processor_returns_standard_contract():
+    """
+    Verify that DocumentProcessor exposes the standard
+    Document Intelligence module contract.
+    """
+
+    processor = DocumentProcessor()
+
+    result = processor.process(
+        "mock_data/documents/test_gst_certificate.pdf"
+    )
+
+    contract = result["contract"]
+
+    assert contract["success"] is True
+    assert contract["processing_status"] == "SUCCESS"
+
+    assert contract["document_type"] == "GST_CERTIFICATE"
+
+    assert contract["extracted_data"] == {
+        "gstin": "27ABCDE1234F1Z5",
+        "legal_name": "ABC Industries Pvt Ltd",
+        "registration_status": "ACTIVE",
+    }
+
+    assert contract["confidence"] == 0.7
+
+    assert contract["errors"] == []
+
+
+def test_scanned_pdf_returns_standard_contract():
+    """
+    Verify that OCR-based processing also produces the
+    standard module contract.
+    """
+
+    processor = DocumentProcessor()
+
+    result = processor.process(
+        "mock_data/documents/scanned_gst_certificate.pdf"
+    )
+
+    contract = result["contract"]
+
+    assert contract["success"] is True
+    assert contract["processing_status"] == "SUCCESS"
+    assert contract["document_type"] == "GST_CERTIFICATE"
+
+    assert contract["extracted_data"]["gstin"] == (
+        "27ABCDE1234F1Z5"
+    )
+
+    assert contract["confidence"] == 0.7
+    assert contract["errors"] == []
+
+
+def test_failed_extraction_returns_failed_contract():
+    """
+    Verify that failed document extraction produces a
+    failed standard contract.
+    """
+
+    class EmptyDocumentLoader:
+        def load_and_extract(self, file_path):
+            return {
+                "status": "FAIL",
+                "file_path": file_path,
+                "extraction_method": "native_pdf",
+                "raw_text": "",
+            }
+
+    processor = DocumentProcessor(
+        document_loader=EmptyDocumentLoader()
+    )
+
+    result = processor.process(
+        "mock_data/documents/empty.pdf"
+    )
+
+    contract = result["contract"]
+
+    assert contract["success"] is False
+    assert contract["processing_status"] == "FAIL"
+    assert contract["document_type"] == "UNKNOWN"
+    assert contract["extracted_data"] == {}
+    assert contract["confidence"] == 0.0
+    assert contract["errors"] == [
+        "Document text extraction failed"
+    ]
