@@ -30,11 +30,20 @@ class DocumentClassifier:
             "certificate of registration": 0.05,
             "taxpayer": 0.05,
         },
+
         "PAN_CARD": {
             "permanent account number": 0.50,
             "income tax department": 0.30,
             "pan": 0.20,
         },
+
+        "UDYAM_CERTIFICATE": {
+            "udyam registration": 0.35,
+            "udyam registration number": 0.40,
+            "udyam": 0.15,
+            "ministry of micro": 0.10,
+        },
+
         "COMPANY_REGISTRATION": {
             "certificate of incorporation": 0.30,
             "registrar of companies": 0.25,
@@ -42,6 +51,7 @@ class DocumentClassifier:
             "corporate identity number": 0.20,
             "cin": 0.05,
         },
+
         "FINANCIAL_STATEMENT": {
             "balance sheet": 0.25,
             "profit and loss": 0.20,
@@ -50,6 +60,7 @@ class DocumentClassifier:
             "audited financial statement": 0.10,
             "financial statements": 0.10,
         },
+
         "BANK_CERTIFICATE": {
             "bank certificate": 0.30,
             "bank account": 0.25,
@@ -57,6 +68,7 @@ class DocumentClassifier:
             "banker": 0.15,
             "branch manager": 0.10,
         },
+
         "EXPERIENCE_CERTIFICATE": {
             "experience certificate": 0.30,
             "work order": 0.20,
@@ -64,24 +76,28 @@ class DocumentClassifier:
             "similar work": 0.15,
             "completion certificate": 0.15,
         },
+
         "TECHNICAL_CERTIFICATE": {
             "technical certificate": 0.30,
             "technical specification": 0.25,
             "compliance certificate": 0.25,
             "technical qualification": 0.20,
         },
+
         "AFFIDAVIT": {
             "affidavit": 0.40,
             "sworn before": 0.25,
             "deponent": 0.20,
             "notary": 0.15,
         },
+
         "UNDERTAKING": {
             "undertaking": 0.40,
             "hereby undertake": 0.25,
             "we undertake": 0.20,
             "declaration and undertaking": 0.15,
         },
+
         "TENDER_DOCUMENT": {
             "tender document": 0.25,
             "notice inviting tender": 0.20,
@@ -99,11 +115,25 @@ class DocumentClassifier:
             "gst in",
             "gstln",
         ],
+
         "pan": [
             "p an",
         ],
+
         "cin": [
             "c in",
+        ],
+
+        "udyam": [
+            "udyarn",
+        ],
+
+        "udyam registration": [
+            "udyarn registration",
+        ],
+
+        "udyam registration number": [
+            "udyarn registration number",
         ],
     }
 
@@ -198,6 +228,7 @@ class DocumentClassifier:
         # ---------------------------------------------------------
         # Rank document types by evidence score.
         # ---------------------------------------------------------
+
         ranked_scores = sorted(
             scores.items(),
             key=lambda item: item[1][0],
@@ -207,6 +238,7 @@ class DocumentClassifier:
         # ---------------------------------------------------------
         # Best classification.
         # ---------------------------------------------------------
+
         document_type, (
             evidence_score,
             matched_patterns,
@@ -435,6 +467,7 @@ class DocumentClassifier:
 # TESTS
 # ================================================================
 
+
 def test_ambiguous_classification():
     """
     Verify that a small difference between the top two scores
@@ -447,13 +480,6 @@ def test_ambiguous_classification():
 
     classifier = DocumentClassifier()
 
-    # Controlled test evidence:
-    #
-    # GST_CERTIFICATE       = 0.60
-    # COMPANY_REGISTRATION  = 0.55
-    # Difference             = 0.05
-    #
-    # Since 0.05 < 0.10, the result must be ambiguous.
     classifier.DOCUMENT_PATTERNS = {
         "GST_CERTIFICATE": {
             "gstin": 0.60,
@@ -524,11 +550,6 @@ def test_ambiguity_threshold_boundary():
 
     classifier = DocumentClassifier()
 
-    # Controlled evidence:
-    #
-    # GST_CERTIFICATE       = 0.60
-    # COMPANY_REGISTRATION  = 0.50
-    # Difference             = 0.10
     classifier.DOCUMENT_PATTERNS = {
         "GST_CERTIFICATE": {
             "gstin": 0.60,

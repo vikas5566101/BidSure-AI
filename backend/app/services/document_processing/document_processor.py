@@ -186,6 +186,23 @@ class DocumentProcessor:
                 )
             )
 
+        elif document_type == "PAN_CARD":
+            extracted_data = (
+                self.field_extractor.extract_pan_fields(
+                    raw_text
+                )
+            )
+
+        elif document_type == "UDYAM_CERTIFICATE":
+            extracted_data = (
+                self.field_extractor.extract_udyam_fields(
+                    raw_text
+                )
+            )
+
+        # Unknown document types intentionally produce
+        # empty extracted_data.
+
         # ---------------------------------------------------------
         # 5. Build standard module-contract result
         # ---------------------------------------------------------
