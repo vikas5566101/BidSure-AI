@@ -13,6 +13,11 @@ pdf.drawString(100, 670, "Legal Name: ABC Industries Pvt Ltd")
 pdf.drawString(100, 640, "Registration Date: 15/04/2022")
 pdf.drawString(100, 610, "Registration Status: Active")
 pdf.drawString(100, 580, "Business Type: Private Limited Company")
+pdf.drawString(
+    100,
+    550,
+    "Principal Address: 123 Industrial Area, Mumbai, Maharashtra"
+)
 
 pdf.save()
 
