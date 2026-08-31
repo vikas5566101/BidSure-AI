@@ -11,6 +11,7 @@ class ComplianceAssessmentCreate(BaseModel):
     status: str = "PENDING"
     summary: str | None = None
     assessment_metadata: dict | None = None
+    assessed_at: datetime | None = None
 
 
 class ComplianceAssessmentUpdate(BaseModel):

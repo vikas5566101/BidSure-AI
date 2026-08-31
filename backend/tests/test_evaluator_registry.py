@@ -9,7 +9,9 @@ from app.services.evaluators.registry import (
 from app.services.evaluators.register import (
     register_evaluators,
 )
-
+from app.services.evaluators.udyam_evaluator import (
+    UdyamEvaluator,
+)
 
 def test_gst_evaluator_can_be_registered():
 
@@ -78,4 +80,21 @@ def test_register_evaluators_registers_gst():
     assert isinstance(
         evaluator,
         GSTEvaluator,
+    )
+
+def test_register_evaluators_registers_udyam():
+
+    register_evaluators()
+
+    from app.services.evaluators.registry import (
+        evaluator_registry,
+    )
+
+    evaluator = evaluator_registry.get("UDYAM")
+
+    assert evaluator is not None
+
+    assert isinstance(
+        evaluator,
+        UdyamEvaluator,
     )
