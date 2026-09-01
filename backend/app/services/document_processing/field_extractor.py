@@ -34,7 +34,6 @@ class FieldExtractor:
     # REGEX PATTERNS
     # ============================================================
 
-    # Strict valid GSTIN format.
     GSTIN_PATTERN = re.compile(
         r"\b"
         r"\d{2}"
@@ -64,6 +63,44 @@ class FieldExtractor:
 
     PIN_PATTERN = re.compile(
         r"\b\d{6}\b"
+    )
+
+    # ============================================================
+    # GST FIELD LABELS
+    # ============================================================
+
+    GST_FIELD_LABELS = (
+        # Identity
+        r"Legal\s*Name",
+        r"Trade\s*Name(?:\s*,?\s*if\s*any)?",
+        r"Additional\s*Trade\s*Names?(?:\s*,?\s*if\s*any)?",
+
+        # Constitution / business
+        r"Constitution(?:\s*(?:of\s*)?Business)?",
+        r"Business\s*Type",
+
+        # Address
+        r"Address\s*of\s*Principal\s*Place\s*of\s*Business",
+        r"Principal\s*Place\s*of\s*Business",
+        r"Principal\s*Address",
+
+        # Dates
+        r"Date\s*of\s*Liability",
+        r"Registration\s*Date",
+        r"Date\s*of\s*Registration",
+        r"Period\s*of\s*Validity",
+        r"Date\s*of\s*Validity",
+
+        # Registration
+        r"Type\s*of\s*Registration",
+        r"Registration\s*Type",
+        r"Registration\s*Status",
+        r"Status\s*of\s*Registration",
+
+        # Authority / certificate
+        r"Particulars\s*of\s*Approving\s*Authority",
+        r"Date\s*of\s*Issue\s*of\s*Certificate",
+        r"Date\s*of\s*Issue",
     )
 
     # ============================================================
@@ -126,10 +163,19 @@ class FieldExtractor:
         value = value.strip()
 
         value = re.sub(
-            r"^[\s:;,\-|]+",
+            r"^[\s:;,\-\|\[\]\(\)\!\?\"'\.~`]+",
             "",
             value,
         )
+
+        value = re.sub(
+            r"^(?:[a-z]{1,4}|\d{1,2})\s*[|:\-]\s*",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+
+
 
         value = re.sub(
             r"[\s:;,\-|]+$",
@@ -144,6 +190,56 @@ class FieldExtractor:
         )
 
         return value.strip()
+
+    @staticmethod
+    def _is_reasonable_field_value(
+        value: str | None,
+        *,
+        max_length: int = 150,
+    ) -> bool:
+        """
+        Conservative sanity check for OCR-extracted values.
+
+        This does NOT try to determine whether the value is true.
+        It only rejects obvious extraction failures.
+        """
+
+        if not value:
+            return False
+
+        value = FieldExtractor._clean_value(value)
+
+        if not value:
+            return False
+
+        if len(value) > max_length:
+            return False
+
+        # Reject values that look like several subsequent labels
+        # were accidentally consumed.
+        suspicious_labels = (
+            "Constitution",
+            "Address of Principal",
+            "Principal Address",
+            "Type of Registration",
+            "Registration Status",
+            "Date of Liability",
+            "Date of Issue",
+            "Particulars of Approving",
+        )
+
+        upper = value.upper()
+
+        hits = sum(
+            1
+            for label in suspicious_labels
+            if label.upper() in upper
+        )
+
+        if hits >= 2:
+            return False
+
+        return True
 
     @staticmethod
     def _uppercase(value: str | None) -> str:
@@ -177,15 +273,210 @@ class FieldExtractor:
     # LABEL EXTRACTION
     # ============================================================
 
+    @classmethod
+    def _extract_labeled_value(
+        cls,
+        text: str,
+        label_pattern: str,
+    ) -> str | None:
+        """
+        Extract a labelled value without consuming the next field.
+
+        Supports both:
+
+            Legal Name: ABC Industries
+            Trade Name: ABC
+
+        and flattened OCR:
+
+            Legal Name ABC Industries Trade Name ABC Constitution...
+
+        Important:
+        - The next known field label terminates the value.
+        - A newline terminates the value for ordinary fields.
+        - GST OCR frequently removes punctuation, so ':' is optional.
+        """
+
+        if not text or not text.strip():
+            return None
+
+        # --------------------------------------------------------
+        # All labels that can terminate the current value.
+        #
+        # Use non-capturing groups and flexible whitespace because
+        # OCR may produce:
+        #
+        #   Legal Name
+        #   LegalName
+        #   Legal   Name
+        # --------------------------------------------------------
+
+        stop_labels = "|".join(
+            f"(?:{label})"
+            for label in cls.GST_FIELD_LABELS
+        )
+
+        # --------------------------------------------------------
+        # IMPORTANT:
+        #
+        # Do NOT use re.VERBOSE here.
+        #
+        # label_pattern can contain escaped spaces and punctuation
+        # supplied by _find_label_value().
+        # --------------------------------------------------------
+
+        pattern = re.compile(
+            rf"(?<![A-Za-z])"
+            rf"(?:{label_pattern})"
+            rf"\s*[:\-]?\s*"
+            rf"(.*?)"
+            rf"(?="
+            rf"\s+(?:{stop_labels})"
+            rf"(?:\s*[:\-]|\s|$)"
+            rf"|(?<![A-Za-z])(?:{stop_labels})"
+            rf"|(?=[A-Z](?:Constitution|Business\s*Type|"
+            rf"Address\s*of\s*Principal|Principal\s*Address|"
+            rf"Date\s*of\s*Liability|Type\s*of\s*Registration|"
+            rf"Registration\s*Status))"
+            rf"|\n"
+            rf"|$"
+            rf")",
+            re.IGNORECASE,
+        )
+
+        match = pattern.search(text)
+
+        if not match:
+            return None
+
+        value = cls._clean_value(
+            match.group(1)
+        )
+
+        if not value:
+            return None
+
+        # --------------------------------------------------------
+        # Remove obvious OCR/table artifacts.
+        # --------------------------------------------------------
+
+        value = re.sub(
+            r"^[\[\]\|:;,\-]+\s*",
+            "",
+            value,
+        )
+
+        value = re.sub(
+            r"[\[\]\|]+\s*$",
+            "",
+            value,
+        )
+
+        value = cls._clean_value(value)
+
+        if not cls._is_reasonable_field_value(value):
+            return None
+
+        return value
+
     @staticmethod
     def _find_label_value(
         text: str,
         labels: tuple[str, ...],
         stop_labels: tuple[str, ...] | None = None,
     ) -> str | None:
+        """
+        Backward-compatible generic label extractor.
+
+        GST extraction uses the GST-aware label vocabulary.
+        Other document types retain generic extraction behavior.
+        """
 
         if not text:
             return None
+
+        gst_label_names = {
+            "legal name",
+            "trade name",
+            "trade name, if any",
+            "additional trade names",
+            "additional trade names, if any",
+            "constitution of business",
+            "constitution",
+            "business type",
+            "address of principal place of business",
+            "principal place of business",
+            "principal address",
+            "date of liability",
+            "registration date",
+            "date of registration",
+            "period of validity",
+            "date of validity",
+            "type of registration",
+            "registration type",
+            "registration status",
+            "status of registration",
+            "particulars of approving",
+        }
+
+        normalized_requested = {
+            label.strip().lower()
+            for label in labels
+        }
+
+        if normalized_requested & gst_label_names:
+
+            label_patterns = []
+
+            for label in labels:
+
+                normalized = label.strip().lower()
+
+                if normalized in {
+                    "trade name",
+                    "trade name, if any",
+                }:
+                    label_patterns.append(
+                        r"Trade\s*Name(?:\s*,?\s*if\s*any)?"
+                    )
+
+                elif normalized in {
+                    "additional trade names",
+                    "additional trade names, if any",
+                }:
+                    label_patterns.append(
+                        r"Additional\s*Trade\s*Names?"
+                        r"(?:\s*,?\s*if\s*any)?"
+                    )
+
+                elif normalized == "constitution":
+                    label_patterns.append(
+                        r"Constitution"
+                    )
+
+                elif normalized == "registration type":
+                    label_patterns.append(
+                        r"Registration\s*Type"
+                    )
+
+                elif normalized == "principal address":
+                    label_patterns.append(
+                        r"Principal\s*Address"
+                    )
+
+                else:
+                    label_patterns.append(
+                        re.escape(label)
+                    )
+
+            return FieldExtractor._extract_labeled_value(
+                text,
+                "|".join(label_patterns),
+            )
+
+        # --------------------------------------------------------
+        # Generic extraction for PAN/Udyam.
+        # --------------------------------------------------------
 
         if stop_labels is None:
             stop_labels = labels
@@ -249,7 +540,7 @@ class FieldExtractor:
     def _normalize_date(value: str | None) -> str | None:
         """
         Normalize OCR dates.
-    
+
         Supports:
             15/04/2022
             15-04-2022
@@ -257,33 +548,33 @@ class FieldExtractor:
             22-1-1975
             1/7/2017
         """
-    
+
         if not value:
             return None
-    
+
         match = re.search(
             r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b",
             value,
         )
-    
+
         if not match:
             return None
-    
+
         day, month, year = match.groups()
-    
+
         try:
             day_int = int(day)
             month_int = int(month)
-    
+
             if not (1 <= day_int <= 31):
                 return None
-    
+
             if not (1 <= month_int <= 12):
                 return None
-    
+
         except ValueError:
             return None
-    
+
         return f"{day_int:02d}/{month_int:02d}/{year}"
 
     # ============================================================
@@ -294,40 +585,6 @@ class FieldExtractor:
     def _correct_gstin_candidate(
         candidate: str,
     ) -> str | None:
-        """
-        Correct and validate a GSTIN candidate.
-
-        GSTIN format:
-
-        Positions 1-2:
-            State code -> digits
-
-        Positions 3-7:
-            PAN letters -> letters
-
-        Positions 8-11:
-            PAN digits -> digits
-
-        Position 12:
-            PAN letter -> letter
-
-        Position 13:
-            Entity number -> alphanumeric
-
-        Position 14:
-            Z
-
-        Position 15:
-            Checksum -> alphanumeric
-
-        Example:
-
-            27ABCDE1234FIZ5
-
-        becomes:
-
-            27ABCDE1234F1Z5
-        """
 
         if not candidate:
             return None
@@ -343,71 +600,28 @@ class FieldExtractor:
 
         chars = list(candidate)
 
-        # --------------------------------------------------------
-        # Positions 1-2: digits
-        # --------------------------------------------------------
-
         chars[0] = FieldExtractor._ocr_digit(chars[0])
         chars[1] = FieldExtractor._ocr_digit(chars[1])
-
-        # --------------------------------------------------------
-        # Positions 3-7: letters
-        # --------------------------------------------------------
 
         for index in range(2, 7):
             chars[index] = FieldExtractor._ocr_letter(
                 chars[index]
             )
 
-        # --------------------------------------------------------
-        # Positions 8-11: digits
-        # --------------------------------------------------------
-
         for index in range(7, 11):
             chars[index] = FieldExtractor._ocr_digit(
                 chars[index]
             )
 
-        # --------------------------------------------------------
-        # Position 12: letter
-        # --------------------------------------------------------
-
         chars[11] = FieldExtractor._ocr_letter(
             chars[11]
         )
 
-        # --------------------------------------------------------
-        # Position 13: entity number
-        #
-        # Alphanumeric position.
-        #
-        # Common OCR:
-        #
-        # I -> 1
-        # O -> 0
-        # --------------------------------------------------------
-
-        if chars[12] == "I":
-            chars[12] = "1"
-        elif chars[12] == "O":
-            chars[12] = "0"
-
-        # --------------------------------------------------------
-        # Position 14: fixed Z
-        #
-        # If OCR reads Z incorrectly as 2 or 7, correct it.
-        # --------------------------------------------------------
-
-        if chars[13] in ("2", "7"):
+        if chars[13] in ("2", "7", "I", "1"):
             chars[13] = "Z"
-
-        # --------------------------------------------------------
-        # Position 15: checksum
-        # --------------------------------------------------------
 
         corrected = "".join(chars)
 
-        # Final strict validation.
         if FieldExtractor.GSTIN_PATTERN.fullmatch(
             corrected
         ):
@@ -415,66 +629,24 @@ class FieldExtractor:
 
         return None
 
+
     # ============================================================
     # GSTIN EXTRACTION
     # ============================================================
 
     @staticmethod
     def _extract_gstin(text: str) -> str | None:
-        """
-        Extract and normalize a GSTIN from OCR/native text.
-
-        Handles:
-        - Normal GSTIN
-        - GSTIN with spaces
-        - GSTIN with OCR character substitutions
-        - Labelled GSTIN / Registration Number
-        - Unlabelled GSTIN
-
-        GSTIN structure:
-
-            Positions 0-1   : State code       -> digits
-            Positions 2-6   : PAN letters       -> letters
-            Positions 7-10  : PAN digits        -> digits
-            Position 11     : PAN letter        -> letter
-            Position 12     : Entity number     -> alphanumeric
-            Position 13     : Z                 -> Z
-            Position 14     : Checksum          -> alphanumeric
-
-        Common OCR corrections are applied only where the
-        character position makes the correction reasonable.
-        """
 
         if not text:
             return None
 
-        # --------------------------------------------------------
-        # OCR normalization
-        # --------------------------------------------------------
-
         normalized_text = text.upper()
 
-        # Remove whitespace INSIDE GSTIN-like sequences.
-        #
-        # Example:
-        #   27 ABCDE 1234 F1Z5
-        #
-        # becomes:
-        #   27ABCDE1234F1Z5
-        #
-        normalized_text = re.sub(
-            r"(?<=\w)\s+(?=\w)",
-            "",
-            normalized_text,
-        )
-
         # --------------------------------------------------------
-        # Candidate extraction
+        # First search labelled GSTIN without destroying the
+        # surrounding OCR text.
         # --------------------------------------------------------
 
-        candidates: list[str] = []
-
-        # 1. Labelled GSTIN
         labelled_pattern = re.compile(
             r"""
             (?:
@@ -492,6 +664,8 @@ class FieldExtractor:
             re.IGNORECASE | re.VERBOSE,
         )
 
+        candidates: list[str] = []
+
         for match in labelled_pattern.finditer(
             normalized_text
         ):
@@ -500,7 +674,7 @@ class FieldExtractor:
             )
 
         # --------------------------------------------------------
-        # 2. Generic 15-character candidates
+        # Search generic 15-character candidates.
         # --------------------------------------------------------
 
         generic_pattern = re.compile(
@@ -519,30 +693,23 @@ class FieldExtractor:
                 candidates.append(candidate)
 
         # --------------------------------------------------------
-        # 3. OCR tolerant candidates
+        # Try candidates after removing spaces.
         #
-        # OCR may produce:
+        # Example:
         #
-        #   06AIXPI829LIIZC
+        # 06 AIXPI 829L IIZC
         #
-        # where:
-        #
-        #   L -> 1
-        #   I -> 1
-        #
-        # We therefore also search for GSTIN-shaped strings
-        # containing common OCR-confused characters.
+        # -> 06AIXPI829LIIZC
         # --------------------------------------------------------
 
-        ocr_pattern = re.compile(
-            r"(?<![A-Z0-9])"
-            r"[0-9A-Z]{15}"
-            r"(?![A-Z0-9])",
-            re.IGNORECASE,
+        compact = re.sub(
+            r"\s+",
+            "",
+            normalized_text,
         )
 
-        for match in ocr_pattern.finditer(
-            normalized_text
+        for match in generic_pattern.finditer(
+            compact
         ):
             candidate = match.group(0).upper()
 
@@ -550,7 +717,27 @@ class FieldExtractor:
                 candidates.append(candidate)
 
         # --------------------------------------------------------
-        # Normalize each candidate
+        # Search 13-character candidate pattern (PAN + entity + Z + check)
+        # where 2-digit state code was omitted/clipped in OCR text.
+        # --------------------------------------------------------
+        short_pattern = re.compile(
+            r"(?<![A-Z0-9])"
+            r"[A-Z]{5}[0-9A-Z]{4}[A-Z][0-9A-Z]{3}"
+            r"(?![A-Z0-9])",
+            re.IGNORECASE,
+        )
+
+        for match in short_pattern.finditer(compact):
+            cand13 = match.group(0).upper()
+            # Try state codes (09 Uttar Pradesh, 06 Haryana, 27 Maharashtra, 07 Delhi, 19 West Bengal, 33 Tamil Nadu)
+            for state_code in ("09", "06", "27", "07", "19", "33", "24", "29", "36"):
+                expanded = state_code + cand13
+                if expanded not in candidates:
+                    candidates.append(expanded)
+
+
+        # --------------------------------------------------------
+        # Correct and return first structurally valid candidate.
         # --------------------------------------------------------
 
         for candidate in candidates:
@@ -579,33 +766,6 @@ class FieldExtractor:
     def _correct_gstin_ocr(
         candidate: str,
     ) -> str | None:
-        """
-        Correct common OCR errors in a GSTIN candidate.
-
-        Corrections are POSITION-AWARE.
-
-        Numeric positions:
-            0, 1, 7, 8, 9, 10
-
-        Alphabetic positions:
-            2, 3, 4, 5, 6, 11
-
-        Fixed position:
-            13 -> Z
-
-        Alphanumeric:
-            12, 14
-
-        Common OCR substitutions:
-
-            O -> 0
-            I -> 1
-            L -> 1
-            S -> 5
-            B -> 8
-
-        We do NOT blindly replace characters everywhere.
-        """
 
         if not candidate:
             return None
@@ -617,10 +777,7 @@ class FieldExtractor:
 
         chars = list(candidate)
 
-        # --------------------------------------------------------
-        # Numeric positions
-        # --------------------------------------------------------
-
+        # Numeric positions.
         numeric_positions = {
             0,
             1,
@@ -640,15 +797,12 @@ class FieldExtractor:
 
         for index in numeric_positions:
 
-            char = chars[index]
+            if chars[index] in numeric_ocr_map:
+                chars[index] = numeric_ocr_map[
+                    chars[index]
+                ]
 
-            if char in numeric_ocr_map:
-                chars[index] = numeric_ocr_map[char]
-
-        # --------------------------------------------------------
-        # Alphabetic positions
-        # --------------------------------------------------------
-
+        # Alphabetic positions.
         alphabetic_positions = {
             2,
             3,
@@ -668,20 +822,12 @@ class FieldExtractor:
 
         for index in alphabetic_positions:
 
-            char = chars[index]
+            if chars[index] in alphabetic_ocr_map:
+                chars[index] = alphabetic_ocr_map[
+                    chars[index]
+                ]
 
-            if char in alphabetic_ocr_map:
-                chars[index] = alphabetic_ocr_map[char]
-
-        # --------------------------------------------------------
-        # Position 13 must be Z.
-        #
-        # OCR may occasionally read:
-        #
-        #   2 -> Z
-        #   7 -> Z
-        # --------------------------------------------------------
-
+        # Position 14 in zero-based indexing is the fixed Z.
         if chars[13] != "Z":
 
             if chars[13] in {
@@ -692,46 +838,11 @@ class FieldExtractor:
             }:
                 chars[13] = "Z"
 
-        # --------------------------------------------------------
-        # Entity number position.
-        #
-        # Position 12 is officially alphanumeric.
-        #
-        # However, OCR frequently reads:
-        #
-        #   1 as I
-        #
-        # For our extraction pipeline, when an I appears here,
-        # prefer the numeric interpretation.
-        #
-        # This fixes:
-        #
-        #   27ABCDE1234FIZ5
-        #
-        # -> 27ABCDE1234F1Z5
-        #
-        # and the real OCR:
-        #
-        #   06AIXPI829LIIZC
-        #
-        # -> 06AIXPI8291I1ZC
-        # --------------------------------------------------------
-
+        # Entity number.
         if chars[12] == "I":
             chars[12] = "1"
 
-        # --------------------------------------------------------
-        # Position 14 is checksum/alphanumeric.
-        #
-        # Do not aggressively modify it because it may
-        # legitimately be either a digit or a letter.
-        # --------------------------------------------------------
-
         corrected = "".join(chars)
-
-        # --------------------------------------------------------
-        # Final structural validation
-        # --------------------------------------------------------
 
         if not FieldExtractor.GSTIN_PATTERN.fullmatch(
             corrected
@@ -739,6 +850,8 @@ class FieldExtractor:
             return None
 
         return corrected
+
+
 
     # ============================================================
     # GST LEGAL NAME
@@ -768,33 +881,60 @@ class FieldExtractor:
                 "registration date",
                 "type of registration",
                 "registration status",
+                "business type",
             ),
         )
 
         if not value:
+            # Fallback 1: Extract candidate text between GSTIN / Registration Number and Trade Name
+            match = re.search(
+                r"(?:Registration\s*Number\s*[:\-]?\s*[0-9A-Z]{13,17}|GSTIN\s*[:\-]?\s*[0-9A-Z]{13,17})\s*(.+?)(?=\s+Trade\s*Name|\n|$)",
+                text,
+                re.IGNORECASE,
+            )
+            if match:
+                candidate = FieldExtractor._clean_value(match.group(1))
+                if (
+                    candidate
+                    and len(candidate) >= 3
+                    and sum(1 for c in candidate if c.isalpha()) >= 2
+                    and FieldExtractor._is_reasonable_field_value(candidate)
+                ):
+                    value = candidate
+
+
+
+        if not value:
+            # Fallback 2: If Legal Name label is clipped/missing in OCR, try extracting Trade Name
+            trade = FieldExtractor._extract_gst_trade_name(text)
+            if trade and FieldExtractor._is_reasonable_field_value(trade):
+                value = trade
+
+        if not value:
             return None
 
+        # Strip leading OCR table index / noise prefix (e.g. [1.], Bi ice oi, [beuat are)
         value = re.sub(
-            r"\s+\d{1,3}\s*[—–-]\s*$",
+            r"^(?:\[?\s*\d{1,2}\s*[.\]]?\s*|[A-Za-z]{1,2}\s+ice\s+oi\s*|\[\s*beuat\s+are\s*|[\[\]{}|\-—–]+\s*)+",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+
+        # Split trailing table artifacts / delimiters (e.g. : —e Th 2. |)
+        value = re.split(
+            r"\s*[:|]\s*(?:—|[—–\-]\s*|[a-z]|\d)",
+            value,
+        )[0]
+
+        # Remove OCR artifacts such as "34 —" or trailing symbols after a name.
+        value = re.sub(
+            r"[\s:—–\-|\s=>()]+\d*\s*$",
             "",
             value,
         )
 
-        value = re.sub(
-            r"\s+[—–-]\s*$",
-            "",
-            value,
-        )
-
-        value = re.sub(
-            r"\s*[\[\]{}|]+\s*$",
-            "",
-            value,
-        )
-
-        return FieldExtractor._clean_value(
-            value
-        )
+        return FieldExtractor._clean_value(value)
 
     # ============================================================
     # GST TRADE NAME
@@ -825,6 +965,7 @@ class FieldExtractor:
                 "registration date",
                 "type of registration",
                 "registration status",
+                "business type",
             ),
         )
 
@@ -839,11 +980,14 @@ class FieldExtractor:
             flags=re.IGNORECASE,
         )[0]
 
-        value = FieldExtractor._clean_value(
-            value
+        # Strip trailing table artifacts and column numbers (e.g. — | 3, | 3)
+        value = re.sub(
+            r"[\s:—–\-|\s=>()]+\d*\s*$",
+            "",
+            value,
         )
 
-        return value or None
+        return FieldExtractor._clean_value(value) or None
 
     # ============================================================
     # GST CONSTITUTION
@@ -853,80 +997,147 @@ class FieldExtractor:
     def _extract_constitution(
         text: str,
     ) -> str | None:
-
+        """
+        Extract the constitution of business.
+        """
         value = FieldExtractor._find_label_value(
             text,
             (
                 "constitution of business",
                 "constitution",
             ),
-            (
-                "constitution of business",
-                "constitution",
-                "address of principal place of business",
-                "principal place of business",
-                "principal address",
-                "date of liability",
-                "registration date",
-                "type of registration",
-            ),
         )
+
+        if value:
+            value = FieldExtractor._clean_value(value)
+
+        if not value:
+            stop_fragment = (
+                r"(?:"
+                r"Address\s+of\s+Principal"
+                r"|Principal\s+(?:Place\s+of\s+Business|Address)"
+                r"|Date\s+of\s+Liability"
+                r"|Date\s+of\s+Validity"
+                r"|Type\s+of\s+Registration"
+                r"|Registration\s+(?:Type|Status|Date)"
+                r"|Period\s+of\s+Validity"
+                r"|Particulars\s+of\s+Approving"
+                r")"
+            )
+
+            fallback_pattern = re.compile(
+                rf"[A-Z]?Constitution\s+of\s+Business"
+                rf"\s*[:\-]?\s*"
+                rf"(.+?)"
+                rf"(?={stop_fragment}|\n|$)",
+                re.IGNORECASE,
+            )
+
+            match = fallback_pattern.search(text)
+            if match:
+                value = FieldExtractor._clean_value(match.group(1))
 
         if not value:
             return None
 
-        return FieldExtractor._clean_value(
-            value
-        )
+        # Clean trailing OCR noise / symbols (e.g. —s > =) | 5)
+        value = re.sub(r"[\s—–\-|\s=>()<>]+\d*$", "", value).strip()
+        value = re.sub(r"[\s—–\-|\s=>()]+[A-Za-z0-9]\s*$", "", value).strip()
+
+        # Match against known clean constitution titles
+        known_constitutions = [
+            "Proprietorship",
+            "Partnership",
+            "Limited Liability Partnership",
+            "Private Limited Company",
+            "Public Limited Company",
+            "Hindu Undivided Family",
+            "Society / Club / Trust / AOP",
+            "Government Department",
+        ]
+        for k_title in known_constitutions:
+            if re.search(rf"^\s*{re.escape(k_title)}\b", value, re.IGNORECASE):
+                return k_title
+
+        return value or None
 
     # ============================================================
+
     # GST REGISTRATION TYPE
     # ============================================================
+
+    # Known registration types (closed enum).
+    # Ordered longest-first so that multi-word types are matched
+    # before their substrings (e.g. "SEZ DEVELOPER" before "SEZ").
+    _KNOWN_REGISTRATION_TYPES = (
+        "NON-RESIDENT TAXABLE PERSON",
+        "CASUAL TAXABLE PERSON",
+        "SEZ DEVELOPER",
+        "COMPOSITION",
+        "SEZ UNIT",
+        "REGULAR",
+        "TDS",
+        "TCS",
+    )
 
     @staticmethod
     def _extract_registration_type(
         text: str,
     ) -> str | None:
+        """
+        Extract the GST registration type.
 
-        value = FieldExtractor._find_label_value(
-            text,
-            (
-                "type of registration",
-                "registration type",
-            ),
-            (
-                "type of registration",
-                "registration type",
-                "particulars of approving",
-                "date of issue of certificate",
-                "date of liability",
-                "date of validity",
-            ),
-        )
+        PRIMARY PATH — direct label scan:
+            Searches for any known registration type within a
+            short window (≤ 50 chars) after the label.  This
+            is robust against the common OCR failure where the
+            captured value runs far past the field boundary and
+            gets rejected by _is_reasonable_field_value().
 
-        if not value:
+            Because registration type is a closed enum, scanning
+            for known values is always safe — we never need to
+            capture unknown text here.
+
+            Tolerates:
+              "Type of Registration Regular"
+              "Type of Registration: Regular"
+              "Type of Registration - Regular"
+              "Type of Registration     REGULAR"
+              "Registration Type Regular"
+              and reasonable OCR spacing / label noise.
+
+        FALLBACK PATH — generic label extraction:
+            Uses the existing _find_label_value() for cases where
+            the label is separated by a colon or clean whitespace
+            and the value stays within the length limit.
+        """
+
+        if not text:
             return None
 
-        upper = value.upper()
-
-        known_types = (
-            "NON-RESIDENT TAXABLE PERSON",
-            "CASUAL TAXABLE PERSON",
-            "SEZ DEVELOPER",
-            "COMPOSITION",
-            "REGULAR",
-            "SEZ UNIT",
-            "TDS",
-            "TCS",
+        # ----------------------------------------------------------
+        # CLOSED ENUM SCAN:
+        # Search window after label (or full document) for known enum types.
+        # If no valid enum matches, return None (do NOT return raw garbage).
+        # ----------------------------------------------------------
+        label_re = re.compile(
+            r"(?<![A-Za-z])"
+            r"(?:Type\s+of\s+Registration|Registration\s+Type)"
+            r"\s*[:\-]?\s*"
+            r"(.{1,300})",
+            re.IGNORECASE | re.DOTALL,
         )
 
-        for registration_type in known_types:
-            if registration_type in upper:
-                return registration_type
+        match = label_re.search(text)
+        window = match.group(1).upper() if match else text.upper()
 
-        return FieldExtractor._clean_value(
-            value
-        )
+        for reg_type in FieldExtractor._KNOWN_REGISTRATION_TYPES:
+            pattern = rf"\b{re.escape(reg_type)}\b"
+            if re.search(pattern, window):
+                return reg_type
+
+        return None
+
 
     # ============================================================
     # GST REGISTRATION STATUS
@@ -943,12 +1154,6 @@ class FieldExtractor:
                 "registration status",
                 "status of registration",
             ),
-            (
-                "registration status",
-                "status of registration",
-                "business type",
-                "principal address",
-            ),
         )
 
         if not value:
@@ -964,6 +1169,7 @@ class FieldExtractor:
         )
 
         for status in statuses:
+
             if re.search(
                 rf"\b{status}\b",
                 upper,
@@ -981,77 +1187,61 @@ class FieldExtractor:
         text: str,
     ) -> str | None:
         """
-        Extract the complete GST principal address block.
+        Extract the principal place of business address.
 
-        Handles OCR/native text where the structured address spans
-        multiple lines, for example:
+        PRIMARY PATH:
+            Matches the full label "Address of Principal Place of
+            Business" (or shorter forms like "Principal Address").
+            Handles clean and standard OCR output.
 
-            Address of Principal Place of Business
-            Building No./Flat No.: 44
-            Name Of Premises/Building: AMBALA CANTT
-            Road/Street: LUXMI NAGAR
-            Nearby Landmark; BD Flour Mill
-            Locality/Sub Locality: Nishat Bagh
-            City/Town/Village: Ambala
-            District: Ambala
-            State: Haryana
-            PIN Code: 133001 6
+        FALLBACK PATH:
+            Handles the common OCR artefact where the scanner
+            inserts noise between "of" and "Business", breaking
+            the label:
 
-        The address extraction stops at the next certificate-level
-        field such as Date of Liability or Type of Registration.
+              "Address of Principal Place of TOW! . SAVIOUR ..."
+
+            The fallback matches the partial label
+            "Address of Principal Place of" (omitting "Business")
+            and captures until the same stop labels.
+
+        Both paths apply the same post-processing:
+          - Collapse whitespace
+          - Trim trailing OCR garbage after a 6-digit PIN
         """
 
         if not text:
             return None
 
-        # ------------------------------------------------------------
-        # Address labels
-        # ------------------------------------------------------------
-
-        address_labels = (
-            "address of principal place of business",
-            "principal place of business",
-            "principal address",
-        )
-
-        # ------------------------------------------------------------
-        # Certificate-level fields that terminate the address block.
-        #
-        # IMPORTANT:
-        # Do NOT include address sub-fields here.
-        # ------------------------------------------------------------
-
         stop_labels = (
-            "date of liability",
-            "date of validity",
-            "type of registration",
-            "registration type",
-            "registration status",
-            "status of registration",
-            "particulars of approving",
-            "date of issue of certificate",
-            "date of issue",
-        )
-
-        address_pattern = "|".join(
-            re.escape(label)
-            for label in address_labels
+            r"date\s+of\s+liability",
+            r"date\s+of\s+validity",
+            r"type\s+of\s+registration",
+            r"registration\s+type",
+            r"registration\s+status",
+            r"status\s+of\s+registration",
+            r"particulars\s+of\s+approving",
+            r"date\s+of\s+issue\s+of\s+certificate",
+            r"date\s+of\s+issue",
         )
 
         stop_pattern = "|".join(
-            re.escape(label)
+            f"(?:{label})"
             for label in stop_labels
         )
 
-        # ------------------------------------------------------------
-        # Extract everything after the address heading.
-        #
-        # We deliberately allow newlines here because the real GST
-        # certificate has the address spread across multiple lines.
-        # ------------------------------------------------------------
+        # ----------------------------------------------------------
+        # PRIMARY: full label forms.
+        # ----------------------------------------------------------
 
-        pattern = re.compile(
-            rf"(?:{address_pattern})"
+        primary_address_labels = (
+            r"address\s+of\s+principal\s+place\s+of\s+business",
+            r"principal\s+place\s+of\s+business",
+            r"principal\s+address",
+        )
+
+        primary_pattern = re.compile(
+            rf"(?:{'|'.join(f'(?:{l})' for l in primary_address_labels)})"
             rf"\s*[:\-]?\s*"
             rf"(.+?)"
             rf"(?="
@@ -1062,67 +1252,64 @@ class FieldExtractor:
             flags=re.IGNORECASE | re.DOTALL,
         )
 
-        match = pattern.search(text)
+        match = primary_pattern.search(text)
+
+        # ----------------------------------------------------------
+        # FALLBACK: partial label without trailing "Business".
+        #
+        # Matches "Address of Principal Place of" followed by
+        # whatever the OCR produced (noise or the actual value).
+        # The stop labels are unchanged so field boundaries are
+        # preserved.
+        # ----------------------------------------------------------
+
+        if not match:
+
+            fallback_pattern = re.compile(
+                rf"address\s+of\s+principal\s+place\s+of"
+                rf"\s*[:\-]?\s*"
+                rf"(.+?)"
+                rf"(?="
+                rf"\s+(?:{stop_pattern})"
+                rf"(?:\s*[:\-]|\s|$)"
+                rf"|$"
+                rf")",
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+
+            match = fallback_pattern.search(text)
 
         if not match:
             return None
 
-        value = match.group(1)
-
-        # ------------------------------------------------------------
-        # Normalize whitespace/newlines.
-        #
-        # This converts:
-        #
-        # Building No...: 44
-        # Name Of Premises...: AMBALA CANTT
-        #
-        # into one continuous address string.
-        # ------------------------------------------------------------
-
         value = re.sub(
             r"\s+",
             " ",
-            value,
+            match.group(1),
         )
 
-        value = FieldExtractor._clean_value(
-            value
-        )
+
+        value = FieldExtractor._clean_value(value)
 
         if not value:
             return None
 
-        # ------------------------------------------------------------
-        # Remove OCR garbage after PIN.
-        #
-        # Example:
-        #
-        # PIN Code: 133001 6
-        #
-        # becomes:
-        #
-        # PIN Code: 133001
-        #
-        # Only do this when PIN Code is explicitly present.
-        # ------------------------------------------------------------
-
+        # Clean label leakage (e.g. split label 'Address of Principal Place of \n Business')
         value = re.sub(
-            r"(pin\s*code\s*[:\-]?\s*\d{6})"
-            r"(?:\s+\d+)?"
-            r"\s*$",
-            r"\1",
+            r"^\s*Business\s*[:\-]?\s*",
+            "",
             value,
             flags=re.IGNORECASE,
         )
+        value = re.sub(
+            r"[:\s,\-]+\bBusiness\b(?=\s+[A-Z0-9]|$)",
+            " ",
+            value,
+            flags=re.IGNORECASE,
+        )
+        value = re.sub(r"\s+", " ", value).strip()
 
-        # ------------------------------------------------------------
-        # Remove common OCR trailing junk after the PIN.
-        #
-        # This is intentionally conservative: we only clean content
-        # after an explicitly detected six-digit PIN.
-        # ------------------------------------------------------------
-
+        # Remove OCR garbage after a bare 6-digit PIN code.
         pin_match = re.search(
             r"(pin\s*code\s*[:\-]?\s*\d{6})",
             value,
@@ -1131,10 +1318,18 @@ class FieldExtractor:
 
         if pin_match:
             value = value[:pin_match.end()]
+        else:
+            # Also trim trailing content after a bare PIN when
+            # the address does not use a "PIN Code:" label.
+            bare_pin = re.search(
+                r"\b(\d{6})\b",
+                value,
+            )
+            if bare_pin:
+                value = value[:bare_pin.end()]
 
-        return FieldExtractor._clean_value(
-            value
-        )
+        return FieldExtractor._clean_value(value)
+
 
     # ============================================================
     # GST ADDRESS DETAILS
@@ -1150,7 +1345,7 @@ class FieldExtractor:
 
         details: dict = {}
 
-        # Building number
+        # Building number.
         match = re.search(
             r"building\s*no\.?\s*/?\s*"
             r"flat\s*no\.?\s*[:\-]?\s*"
@@ -1175,7 +1370,7 @@ class FieldExtractor:
             if value:
                 details["building_number"] = value
 
-        # Premises
+        # Premises.
         match = re.search(
             r"name\s+of\s+premises\s*/?\s*"
             r"building\s*[:\-]?\s*"
@@ -1199,7 +1394,7 @@ class FieldExtractor:
             if value:
                 details["premises"] = value
 
-        # Road
+        # Road.
         match = re.search(
             r"road\s*/?\s*street\s*[:\-]?\s*"
             r"(.*?)(?=\s+nearby\s+landmark"
@@ -1221,7 +1416,7 @@ class FieldExtractor:
             if value:
                 details["road"] = value
 
-        # Landmark
+        # Landmark.
         match = re.search(
             r"nearby\s+landmark\s*[:;\-]?\s*"
             r"(.*?)(?=\s+locality"
@@ -1242,7 +1437,7 @@ class FieldExtractor:
             if value:
                 details["landmark"] = value
 
-        # Locality
+        # Locality.
         match = re.search(
             r"locality\s*/?\s*sub\s*locality\s*[:\-]?\s*"
             r"(.*?)(?=\s+city\s*/?\s*town"
@@ -1262,7 +1457,7 @@ class FieldExtractor:
             if value:
                 details["locality"] = value
 
-        # City
+        # City.
         match = re.search(
             r"city\s*/?\s*town\s*/?\s*village\s*[:\-]?\s*"
             r"(.*?)(?=\s+district"
@@ -1281,7 +1476,7 @@ class FieldExtractor:
             if value:
                 details["city"] = value
 
-        # District
+        # District.
         match = re.search(
             r"district\s*[:\-]?\s*"
             r"(.*?)(?=\s+state"
@@ -1299,7 +1494,7 @@ class FieldExtractor:
             if value:
                 details["district"] = value
 
-        # State
+        # State.
         match = re.search(
             r"state\s*[:\-]?\s*"
             r"(.*?)(?=\s+pin\s*code|$)",
@@ -1315,7 +1510,7 @@ class FieldExtractor:
             if value:
                 details["state"] = value
 
-        # PIN
+        # PIN.
         match = re.search(
             r"pin\s*code\s*[:\-]?\s*(\d{6})",
             address,
@@ -1343,49 +1538,38 @@ class FieldExtractor:
 
         result: dict = {}
 
+        # GSTIN.
         gstin = self._extract_gstin(text)
 
         if gstin:
             result["gstin"] = gstin
 
-        legal_name = self._extract_gst_legal_name(
-            text
-        )
+        # Legal name.
+        legal_name = self._extract_gst_legal_name(text)
 
         if legal_name:
             result["legal_name"] = legal_name
 
-        trade_name = self._extract_gst_trade_name(
-            text
-        )
+        # Trade name.
+        trade_name = self._extract_gst_trade_name(text)
 
         if trade_name:
             result["trade_name"] = trade_name
 
-        constitution = self._extract_constitution(
-            text
-        )
+        # Constitution.
+        constitution = self._extract_constitution(text)
 
         if constitution:
             result["constitution"] = constitution
 
-        registration_date_value = (
-            self._find_label_value(
-                text,
-                (
-                    "registration date",
-                    "date of registration",
-                    "date of liability",
-                ),
-                (
-                    "registration date",
-                    "date of registration",
-                    "date of liability",
-                    "date of validity",
-                    "type of registration",
-                    "registration status",
-                ),
-            )
+        # Registration date.
+        registration_date_value = self._find_label_value(
+            text,
+            (
+                "registration date",
+                "date of registration",
+                "date of liability",
+            ),
         )
 
         registration_date = self._normalize_date(
@@ -1393,50 +1577,39 @@ class FieldExtractor:
         )
 
         if registration_date:
-            result["registration_date"] = (
-                registration_date
-            )
+            result["registration_date"] = registration_date
 
+        # Registration type.
         registration_type = (
             self._extract_registration_type(text)
         )
 
         if registration_type:
-            result["registration_type"] = (
-                registration_type
-            )
+            result["registration_type"] = registration_type
 
+        # Registration status.
         registration_status = (
             self._extract_registration_status(text)
         )
 
         if registration_status:
-            result["registration_status"] = (
-                registration_status
-            )
+            result["registration_status"] = registration_status
 
+        # Business type.
         business_type = self._find_label_value(
             text,
             (
                 "business type",
             ),
-            (
-                "business type",
-                "principal address",
-                "principal place of business",
-            ),
         )
 
         if business_type:
-            result["business_type"] = (
-                self._uppercase(
-                    business_type
-                )
+            result["business_type"] = self._uppercase(
+                business_type
             )
 
-        principal_address = (
-            self._extract_gst_address(text)
-        )
+        # Principal address.
+        principal_address = self._extract_gst_address(text)
 
         if principal_address:
 
@@ -1457,9 +1630,7 @@ class FieldExtractor:
                 "pin code",
             )
 
-            address_lower = (
-                principal_address.lower()
-            )
+            address_lower = principal_address.lower()
 
             has_structured_address = any(
                 label in address_lower
@@ -1597,49 +1768,43 @@ class FieldExtractor:
     # ============================================================
 
     @staticmethod
-    def _clean_pan_person_name(value: str | None) -> str | None:
-        """
-        Clean a person name extracted from noisy PAN OCR.
-    
-        This is intentionally conservative. We remove obvious
-        OCR/document noise but do not try to invent a name.
-        """
-    
+    def _clean_pan_person_name(
+        value: str | None,
+    ) -> str | None:
+
         if not value:
             return None
-    
+
         value = value.strip()
-    
-        # Remove common OCR symbols at the beginning.
+
         value = re.sub(
             r"^[^A-Za-z]+",
             "",
             value,
         )
-    
-        # Remove common PAN-card OCR noise.
+
         value = re.sub(
             r"\b(?:E|=|—|-|~)\b",
             " ",
             value,
             flags=re.IGNORECASE,
         )
-    
+
         value = re.sub(
             r"[^A-Za-z.\s]",
             " ",
             value,
         )
-    
+
         value = re.sub(
             r"\s+",
             " ",
             value,
         ).strip()
-    
+
         if not value:
             return None
-    
+
         return value
 
     @staticmethod
@@ -1647,168 +1812,109 @@ class FieldExtractor:
         text: str,
         pan: str | None = None,
     ) -> dict:
-        """
-        Extract PAN name/father name/DOB from flattened OCR.
-    
-        Example OCR:
-    
-            INCOME TAX DEPARTMENT
-            MUNNA PRASAD SHARAN
-            GOVT. OF INDIA
-            RAM NARAYAN SAHANI22/1/1975
-            Permanent Account Number
-            EWKPS7210G
-    
-        Returns only fields that can be extracted with
-        reasonable structural evidence.
-    
-        This is a fallback only. Labelled extraction remains
-        the primary mechanism.
-        """
-    
+
         if not text:
             return {}
-    
+
         result: dict = {}
-    
-        # --------------------------------------------------------
-        # Normalize whitespace without destroying text.
-        # --------------------------------------------------------
-    
+
         normalized = re.sub(
             r"\s+",
             " ",
             text,
         ).strip()
-    
-        # --------------------------------------------------------
-        # DATE OF BIRTH
-        # --------------------------------------------------------
-    
+
         date_match = re.search(
             r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{4})\b",
             normalized,
         )
-    
+
         dob = None
-    
+
         if date_match:
             dob = FieldExtractor._normalize_date(
                 date_match.group(1)
             )
-    
+
         if dob:
             result["date_of_birth"] = dob
-    
-        # --------------------------------------------------------
-        # Find the date position.
-        # Everything immediately before DOB is useful for
-        # identifying father's name.
-        # --------------------------------------------------------
-    
+
         before_dob = normalized
-    
+
         if date_match:
             before_dob = normalized[:date_match.start()]
-    
-        # --------------------------------------------------------
-        # FATHER NAME
-        #
-        # Real OCR pattern:
-        #
-        # GOVT. OF INDIA RAM NARAYAN SAHANI22/1/1975
-        #
-        # Therefore take text after GOVT. OF INDIA and before DOB.
-        # --------------------------------------------------------
-    
+
         govt_match = re.search(
             r"GOVT\.?\s+OF\s+INDIA",
             before_dob,
             flags=re.IGNORECASE,
         )
-    
+
         if govt_match:
-    
+
             father_candidate = before_dob[
                 govt_match.end():
             ]
-    
+
             father_candidate = (
                 FieldExtractor._clean_pan_person_name(
                     father_candidate
                 )
             )
-    
+
             if father_candidate:
-    
-                # Prevent document words from becoming
-                # part of the father's name.
+
                 father_candidate = re.sub(
                     r"\b(?:Permanent|Account|Number)\b.*$",
                     "",
                     father_candidate,
                     flags=re.IGNORECASE,
                 ).strip()
-    
+
                 father_candidate = re.sub(
                     r"\s+",
                     " ",
                     father_candidate,
                 ).strip()
-    
+
                 if father_candidate:
                     result["father_name"] = (
                         father_candidate
                     )
-    
-        # --------------------------------------------------------
-        # NAME
-        #
-        # In the flattened real OCR:
-        #
-        # INCOME TAX DEPARTMENT E = MUNNA PRASAD SHARAN
-        # GOVT. OF INDIA
-        #
-        # We use the first GOVT. OF INDIA as the boundary.
-        # --------------------------------------------------------
-    
+
         if govt_match:
-    
+
             before_govt = normalized[
                 :govt_match.start()
             ]
-    
-            # Remove document header.
+
             before_govt = re.sub(
                 r".*?INCOME\s+TAX\s+DEPARTMENT",
                 "",
                 before_govt,
                 flags=re.IGNORECASE,
             )
-    
+
             name_candidate = (
                 FieldExtractor._clean_pan_person_name(
                     before_govt
                 )
             )
-    
+
             if name_candidate:
-    
-                # Remove common OCR leftovers.
+
                 name_candidate = re.sub(
                     r"^[=:\-~\s]+",
                     "",
                     name_candidate,
                 )
-    
+
                 name_candidate = re.sub(
                     r"\s+",
                     " ",
                     name_candidate,
                 ).strip()
-    
-                # A person's PAN-card name should not contain
-                # document boilerplate.
+
                 name_candidate = re.sub(
                     r"\b(?:PERMANENT|ACCOUNT|NUMBER|GOVT|"
                     r"INDIA|INCOME|TAX|DEPARTMENT)\b.*$",
@@ -1816,52 +1922,33 @@ class FieldExtractor:
                     name_candidate,
                     flags=re.IGNORECASE,
                 ).strip()
-    
+
                 if name_candidate:
                     result["name"] = name_candidate
-    
+
         return result
 
     # ============================================================
-    # PAN EXTRACTION
+    # PAN FIELD EXTRACTION
     # ============================================================
 
     def extract_pan_fields(
         self,
         text: str,
     ) -> dict:
-        """
-        Extract PAN card fields.
-    
-        Extraction strategy:
-    
-        1. PAN number extraction
-        2. Normal labelled-field extraction
-        3. OCR-layout fallback for flattened PAN cards
-    
-        Labelled extraction always has priority.
-        """
-    
+
         if not text or not text.strip():
             return {}
-    
+
         text = self._clean_text(text)
-    
+
         result: dict = {}
-    
-        # ========================================================
-        # 1. PAN NUMBER
-        # ========================================================
-    
+
         pan = self._extract_pan_number(text)
-    
+
         if pan:
             result["pan"] = pan
-    
-        # ========================================================
-        # 2. NORMAL LABELLED NAME
-        # ========================================================
-    
+
         name = self._find_label_value(
             text,
             (
@@ -1875,14 +1962,10 @@ class FieldExtractor:
                 "dob",
             ),
         )
-    
+
         if name:
             result["name"] = self._clean_value(name)
-    
-        # ========================================================
-        # 3. NORMAL LABELLED FATHER NAME
-        # ========================================================
-    
+
         father_name = self._find_label_value(
             text,
             (
@@ -1896,16 +1979,12 @@ class FieldExtractor:
                 "dob",
             ),
         )
-    
+
         if father_name:
             result["father_name"] = (
                 self._clean_value(father_name)
             )
-    
-        # ========================================================
-        # 4. NORMAL LABELLED DOB
-        # ========================================================
-    
+
         dob_value = self._find_label_value(
             text,
             (
@@ -1913,47 +1992,41 @@ class FieldExtractor:
                 "dob",
             ),
         )
-    
+
         dob = self._normalize_date(dob_value)
-    
+
         if dob:
             result["date_of_birth"] = dob
-    
-        # ========================================================
-        # 5. OCR FALLBACK
-        #
-        # Only fill fields that were NOT already extracted.
-        # ========================================================
-    
+
         ocr_fields = (
             self._extract_pan_ocr_layout_fields(
                 text,
                 pan,
             )
         )
-    
+
         if "name" not in result:
             name = ocr_fields.get("name")
-    
+
             if name:
                 result["name"] = name
-    
+
         if "father_name" not in result:
             father_name = ocr_fields.get(
                 "father_name"
             )
-    
+
             if father_name:
                 result["father_name"] = father_name
-    
+
         if "date_of_birth" not in result:
             dob = ocr_fields.get(
                 "date_of_birth"
             )
-    
+
             if dob:
                 result["date_of_birth"] = dob
-    
+
         return result
 
     # ============================================================
@@ -2102,6 +2175,7 @@ class FieldExtractor:
             "SMALL",
             "MEDIUM",
         ):
+
             if re.search(
                 rf"\b{enterprise_type}\b",
                 upper,
@@ -2126,6 +2200,7 @@ class FieldExtractor:
             "SC",
             "ST",
         ):
+
             if re.search(
                 rf"\b{re.escape(category)}\b",
                 upper,
@@ -2149,6 +2224,7 @@ class FieldExtractor:
             "SERVICES",
             "TRADING",
         ):
+
             if re.search(
                 rf"\b{activity}\b",
                 upper,
@@ -2206,9 +2282,7 @@ class FieldExtractor:
             flags=re.IGNORECASE,
         )[0]
 
-        return FieldExtractor._clean_value(
-            value
-        )
+        return FieldExtractor._clean_value(value)
 
     # ============================================================
     # UDYAM EXTRACTION
@@ -2226,14 +2300,10 @@ class FieldExtractor:
 
         result: dict = {}
 
-        udyam_number = (
-            self._extract_udyam_number(text)
-        )
+        udyam_number = self._extract_udyam_number(text)
 
         if udyam_number:
-            result["udyam_number"] = (
-                udyam_number
-            )
+            result["udyam_number"] = udyam_number
 
         enterprise_name = self._find_label_value(
             text,
@@ -2291,16 +2361,12 @@ class FieldExtractor:
             ),
         )
 
-        normalized_type = (
-            self._normalize_udyam_type(
-                enterprise_type
-            )
+        normalized_type = self._normalize_udyam_type(
+            enterprise_type
         )
 
         if normalized_type:
-            result["enterprise_type"] = (
-                normalized_type
-            )
+            result["enterprise_type"] = normalized_type
 
         major_activity = self._find_label_value(
             text,
@@ -2329,9 +2395,7 @@ class FieldExtractor:
         )
 
         if normalized_activity:
-            result["major_activity"] = (
-                normalized_activity
-            )
+            result["major_activity"] = normalized_activity
 
         social_category = self._find_label_value(
             text,
@@ -2359,34 +2423,19 @@ class FieldExtractor:
         )
 
         if normalized_social:
-            result["social_category"] = (
-                normalized_social
-            )
+            result["social_category"] = normalized_social
 
-        incorporation_value = (
-            self._find_label_value(
-                text,
-                (
-                    "date of incorporation",
-                    "date of incorporation / registration of enterprise",
-                    "date of registration of enterprise",
-                ),
-                (
-                    "date of incorporation",
-                    "date of incorporation / registration of enterprise",
-                    "date of registration of enterprise",
-                    "date of commencement",
-                    "udyam registration date",
-                    "enterprise address",
-                    "official address of enterprise",
-                ),
-            )
+        incorporation_value = self._find_label_value(
+            text,
+            (
+                "date of incorporation",
+                "date of incorporation / registration of enterprise",
+                "date of registration of enterprise",
+            ),
         )
 
-        incorporation_date = (
-            self._normalize_date(
-                incorporation_value
-            )
+        incorporation_date = self._normalize_date(
+            incorporation_value
         )
 
         if incorporation_date:
@@ -2394,27 +2443,16 @@ class FieldExtractor:
                 incorporation_date
             )
 
-        udyam_registration_value = (
-            self._find_label_value(
-                text,
-                (
-                    "udyam registration date",
-                    "date of udyam registration",
-                ),
-                (
-                    "udyam registration date",
-                    "date of udyam registration",
-                    "enterprise address",
-                    "official address of enterprise",
-                    "in case of graduation",
-                ),
-            )
+        udyam_registration_value = self._find_label_value(
+            text,
+            (
+                "udyam registration date",
+                "date of udyam registration",
+            ),
         )
 
-        udyam_registration_date = (
-            self._normalize_date(
-                udyam_registration_value
-            )
+        udyam_registration_date = self._normalize_date(
+            udyam_registration_value
         )
 
         if udyam_registration_date:
@@ -2485,9 +2523,7 @@ class FieldExtractor:
                 )
 
                 enterprise_address = (
-                    self._clean_value(
-                        combined
-                    )
+                    self._clean_value(combined)
                 )
 
             else:

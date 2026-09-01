@@ -32,6 +32,7 @@ Scanned PDF behavior is intentionally kept conservative so that
 existing PDF extraction remains stable.
 """
 
+import re
 from pathlib import Path
 
 import pymupdf
@@ -51,18 +52,17 @@ SUPPORTED_IMAGE_FORMATS = {
 
 # OCR configurations for photographed documents.
 #
-# PSM 6:
-#   Assumes a relatively uniform block of text.
-#
-# PSM 11:
-#   Sparse text / separated text regions.
-#
-# Government certificates often contain tables and separated
-# labels, so trying both is useful.
+# PSM 6: Assumes a uniform block of text (ideal for structured table rows).
+# PSM 3: Fully automatic page segmentation (ideal for full page layout).
+# PSM 4: Single column of text of variable sizes (ideal for certificates).
+# PSM 11: Sparse text / separated text regions.
 OCR_CONFIGURATIONS = (
+    "--psm 3",
+    "--psm 4",
     "--psm 6",
-    "--psm 11",
 )
+
+
 
 
 # ============================================================
@@ -404,42 +404,107 @@ def _calculate_ocr_confidence(
     )
 
     # --------------------------------------------------------
-    # Small bonus for useful text quantity.
+    # COMPOSITE DOCUMENT-INDEPENDENT OCR QUALITY SCORE
     #
-    # This prevents a very short OCR result containing only
-    # one high-confidence word from always winning.
+    # Raw Tesseract confidence alone can be misleading because
+    # sparse text mode (--psm 11) often reports high confidence
+    # on isolated garbage symbols.
+    #
+    # We combine 5 generic signals:
+    #   1. Base Tesseract token confidence (scaled 0..35)
+    #   2. Generic document label richness (scaled 0..35)
+    #   3. Identifier candidate presence (bonus 10-15)
+    #   4. Structured page segmentation mode bonus (+5 for --psm 6/4/3)
+    #   5. Symbol garbage penalty (-0..-40 for high non-ASCII / noise)
     # --------------------------------------------------------
 
-    token_count = len(
-        text_parts
+    # 1. Base confidence (0..35)
+    base_conf_component = (average_confidence / 100.0) * 35.0
+
+    # 2. Generic business/government document label keywords
+    generic_keywords = (
+        "registration", "certificate", "government", "gst", "gstin",
+        "legal name", "trade name", "constitution", "address", "principal",
+        "liability", "validity", "date of", "type of", "number", "place of business",
+        "pan", "father", "date of birth", "udyam", "enterprise", "proprietorship",
+        "partnership", "limited", "regular", "active", "form", "india", "particulars",
+        "issuing", "authority"
+    )
+    text_lower = extracted_text.lower()
+    matched_keywords = sum(1 for kw in generic_keywords if kw in text_lower)
+    keyword_component = min(35.0, matched_keywords * 3.0)
+
+    # 3. Structural candidate identifier bonus
+    identifier_bonus = 0.0
+    if re.search(r"\b\d{2}[A-Za-z0-9]{13}\b", extracted_text):
+        identifier_bonus = 15.0
+    elif re.search(r"\b[A-Za-z]{5}\d{4}[A-Za-z]\b", extracted_text):
+        identifier_bonus = 10.0
+    elif re.search(r"\bUDYAM-[A-Za-z]{2}-\d{2}-\d{7}\b", extracted_text, re.IGNORECASE):
+        identifier_bonus = 15.0
+
+    # 4. Symbol noise / non-ASCII penalty
+    total_len = max(1, len(extracted_text))
+    garbage_chars = sum(
+        1 for c in extracted_text
+        if ord(c) > 127 or c in "€$¥£¢§¶©®™~`^{}[]<>\\|"
+    )
+    garbage_penalty = (garbage_chars / total_len) * 40.0
+
+    # 5. Field Extraction Richness Bonus
+    # Reward OCR outputs where key document fields (legal name, address, etc.)
+    # can be successfully identified.
+    field_bonus = 0.0
+    try:
+        from backend.app.services.document_processing.field_extractor import FieldExtractor
+        extractor = FieldExtractor()
+        extracted = extractor.extract_gst_fields(extracted_text)
+        if extracted.get("gstin"):
+            field_bonus += 5.0
+        if extracted.get("legal_name"):
+            field_bonus += 5.0
+        if extracted.get("trade_name"):
+            field_bonus += 5.0
+        if extracted.get("constitution"):
+            field_bonus += 5.0
+        if extracted.get("principal_address"):
+            field_bonus += 10.0
+    except Exception:
+        pass
+
+    # 6. Label Integrity & Mangled Header Penalty
+    # Detect common OCR fragmentation where PSM mode mangles field headers
+    # e.g., '[ 1 [isos Name', 'beuat are', etc.
+    mangled_label_penalty = 0.0
+    mangled_patterns = (
+        r"\[\s*\d*\s*\[",
+        r"isos\s+name",
+        r"beuat\s+are",
+    )
+    for pattern in mangled_patterns:
+        if re.search(pattern, extracted_text, re.IGNORECASE):
+            mangled_label_penalty += 15.0
+
+    score = max(
+        0.0,
+        min(
+            100.0,
+            base_conf_component
+            + keyword_component
+            + identifier_bonus
+            + field_bonus
+            - garbage_penalty
+            - mangled_label_penalty,
+        ),
     )
 
-    if token_count >= 20:
 
-        quantity_bonus = 5.0
-
-    elif token_count >= 10:
-
-        quantity_bonus = 3.0
-
-    elif token_count >= 5:
-
-        quantity_bonus = 1.0
-
-    else:
-
-        quantity_bonus = 0.0
-
-    score = min(
-        100.0,
-        average_confidence
-        + quantity_bonus,
-    )
 
     return (
         score,
         extracted_text,
     )
+
 
 
 # ============================================================
@@ -519,34 +584,18 @@ def extract_text_from_image(
         original = image.copy()
 
     # --------------------------------------------------------
-    # Build OCR candidates.
+    # Build OCR candidate images (original + upscaled variants).
     # --------------------------------------------------------
 
-    base_images = [
-        (
-            "original",
-            _prepare_original(
-                original
-            ),
-        ),
-        (
-            "grayscale",
-            _prepare_grayscale(
-                original
-            ),
-        ),
-        (
-            "enhanced",
-            _prepare_enhanced(
-                original
-            ),
-        ),
-        (
-            "threshold",
-            _prepare_threshold(
-                original
-            ),
-        ),
+    orig_rgb = _prepare_original(original)
+    enhanced = _prepare_enhanced(original)
+    threshold = _prepare_threshold(original)
+
+    images_to_test = [
+        ("original_upscaled", _resize_for_ocr(orig_rgb)),
+        ("enhanced_upscaled", _resize_for_ocr(enhanced)),
+        ("threshold_upscaled", _resize_for_ocr(threshold)),
+        ("original", orig_rgb),
     ]
 
     candidates = []
@@ -555,58 +604,34 @@ def extract_text_from_image(
     # Run all OCR candidates.
     # ========================================================
 
-    for (
-        image_name,
-        image,
-    ) in base_images:
+    for variant_name, ocr_image in images_to_test:
 
-        # ----------------------------------------------------
-        # OCR both normal and upscaled versions.
-        # ----------------------------------------------------
+        for config in OCR_CONFIGURATIONS:
 
-        images_to_test = [
-            (
-                image_name,
-                image,
-            ),
-            (
-                f"{image_name}_upscaled",
-                _resize_for_ocr(
-                    image
-                ),
-            ),
-        ]
+            try:
 
-        for (
-            variant_name,
-            ocr_image,
-        ) in images_to_test:
-
-            for config in OCR_CONFIGURATIONS:
-
-                try:
-
-                    score, text = (
-                        _calculate_ocr_confidence(
-                            ocr_image,
-                            config,
-                        )
-                    )
-
-                except Exception:
-                    continue
-
-                if not text.strip():
-                    continue
-
-                candidates.append(
-                    {
-                        "score": score,
-                        "text": text.strip(),
-                        "variant": variant_name,
-                        "config": config,
-                    }
+                score, text = _calculate_ocr_confidence(
+                    ocr_image,
+                    config,
                 )
+
+            except Exception:
+                continue
+
+            if not text.strip():
+                continue
+
+            candidates.append(
+                {
+                    "score": score,
+                    "text": text.strip(),
+                    "variant": variant_name,
+                    "config": config,
+                }
+            )
+
+
+
 
     # ========================================================
     # Fallback.

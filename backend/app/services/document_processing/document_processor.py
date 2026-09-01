@@ -80,50 +80,29 @@ class DocumentProcessor:
     def _build_extraction_quality(
         verification: dict,
         extracted_data: dict,
+        document_type: str = "UNKNOWN",
     ) -> dict:
         """
         Build Team 1 extraction-quality information.
 
-        This measures whether extracted fields pass local
-        structural/semantic validation.
+        Quality is based on:
+            1. Fields that were successfully verified.
+            2. Fields that require review.
+            3. Important fields that are expected for the
+               detected document type but were not extracted.
 
-        It does NOT mean that the document has been
-        externally verified.
+        This is LOCAL extraction quality only.
 
-        Quality score:
-
-            verified fields
-            -------------------------------
-            verified fields + review fields
-
-        Example:
-
-            8 valid + 2 review
-            = 8 / 10
-            = 0.80
-
-        Args:
-            verification:
-                Result returned by DocumentVerifier.
-
-            extracted_data:
-                Fields returned by FieldExtractor.
-
-        Returns:
-            Dictionary containing extraction-quality
-            information.
+        It does NOT mean:
+            - government verification
+            - document authenticity
+            - portal verification
         """
 
-        if not isinstance(
-            verification,
-            dict,
-        ):
+        if not isinstance(verification, dict):
             verification = {}
 
-        if not isinstance(
-            extracted_data,
-            dict,
-        ):
+        if not isinstance(extracted_data, dict):
             extracted_data = {}
 
         verified_fields = verification.get(
@@ -141,22 +120,13 @@ class DocumentProcessor:
             [],
         )
 
-        if not isinstance(
-            verified_fields,
-            list,
-        ):
+        if not isinstance(verified_fields, list):
             verified_fields = []
 
-        if not isinstance(
-            fields_requiring_review,
-            list,
-        ):
+        if not isinstance(fields_requiring_review, list):
             fields_requiring_review = []
 
-        if not isinstance(
-            errors,
-            list,
-        ):
+        if not isinstance(errors, list):
             errors = []
 
         # -----------------------------------------------------
@@ -176,8 +146,8 @@ class DocumentProcessor:
         )
 
         # -----------------------------------------------------
-        # A field should never simultaneously appear as
-        # verified and requiring review.
+        # Never allow the same field to be both verified and
+        # requiring review.
         # -----------------------------------------------------
 
         verified_set = set(
@@ -191,17 +161,77 @@ class DocumentProcessor:
         ]
 
         # -----------------------------------------------------
-        # Calculate quality score.
+        # Required core fields.
+        #
+        # These are fields whose absence is important enough
+        # to lower extraction quality.
+        #
+        # Trade name is deliberately NOT required because a GST
+        # certificate may legitimately have no trade name.
+        # -----------------------------------------------------
+
+        required_fields = {
+            "GST_CERTIFICATE": (
+                "gstin",
+                "legal_name",
+                "constitution",
+                "registration_date",
+                "registration_type",
+                "principal_address",
+            ),
+
+            "PAN_CARD": (
+                "pan",
+                "name",
+                "father_name",
+                "date_of_birth",
+            ),
+
+            "UDYAM_CERTIFICATE": (
+                "udyam_number",
+                "enterprise_name",
+                "enterprise_type",
+                "social_category",
+                "date_of_incorporation",
+                "udyam_registration_date",
+            ),
+        }.get(
+            document_type,
+            (),
+        )
+
+        # -----------------------------------------------------
+        # Missing expected fields.
+        #
+        # Do not overwrite fields already verified/reviewed.
+        # -----------------------------------------------------
+
+        known_fields = (
+            set(verified_fields)
+            | set(fields_requiring_review)
+        )
+
+        for field in required_fields:
+
+            if field not in known_fields:
+
+                fields_requiring_review.append(
+                    field
+                )
+
+        # -----------------------------------------------------
+        # Calculate quality.
         #
         # IMPORTANT:
         #
-        # Review fields are included in the denominator.
+        # Missing required fields are now included in the
+        # denominator.
         #
-        # Therefore:
+        # Example:
         #
-        #   8 verified + 2 review = 0.80
-        #
-        # instead of incorrectly returning 1.00.
+        # 2 verified + 4 missing
+        # = 2 / 6
+        # = 0.33
         # -----------------------------------------------------
 
         validated_field_count = (
@@ -229,7 +259,7 @@ class DocumentProcessor:
         )
 
         # -----------------------------------------------------
-        # Determine status.
+        # Determine quality status.
         # -----------------------------------------------------
 
         if errors:
@@ -243,10 +273,6 @@ class DocumentProcessor:
         elif verified_fields:
 
             status = "PASS"
-
-        elif extracted_data:
-
-            status = "REVIEW_REQUIRED"
 
         else:
 
@@ -389,6 +415,10 @@ class DocumentProcessor:
                 self._build_extraction_quality(
                     verification_result,
                     {},
+                    classification_result.get(
+                        "document_type",
+                        "UNKNOWN",
+                    ),
                 )
             )
 
@@ -502,6 +532,7 @@ class DocumentProcessor:
             self._build_extraction_quality(
                 verification_result,
                 extracted_data,
+                document_type,
             )
         )
 

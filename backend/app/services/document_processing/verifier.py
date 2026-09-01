@@ -99,6 +99,41 @@ class DocumentVerifier:
     }
 
     # =========================================================
+    # KNOWN CONSTITUTION TYPES
+    #
+    # Only values that exactly match one of these (uppercased)
+    # are considered locally verified.  Raw noisy OCR strings
+    # that were extracted via a fallback path (e.g. "Limited
+    # Liability Part ship") do NOT match and go to
+    # fields_requiring_review — preserving the value for human
+    # review while not claiming false confidence.
+    # =========================================================
+
+    KNOWN_CONSTITUTION_TYPES = {
+        "PROPRIETORSHIP",
+        "SOLE PROPRIETORSHIP",
+        "PARTNERSHIP",
+        "PRIVATE LIMITED",
+        "PUBLIC LIMITED",
+        "LIMITED LIABILITY PARTNERSHIP",
+        "LLP",
+        "HUF",
+        "HINDU UNDIVIDED FAMILY",
+        "TRUST",
+        "SOCIETY",
+        "GOVERNMENT",
+        "STATUTORY BODY",
+        "PUBLIC SECTOR UNDERTAKING",
+        "UNLIMITED COMPANY",
+        "FOREIGN COMPANY",
+        "ASSOCIATION OF PERSONS",
+        "BODY OF INDIVIDUALS",
+        "CO-OPERATIVE SOCIETY",
+        "ARTIFICIAL JURIDICAL PERSON",
+        "ONE PERSON COMPANY",
+    }
+
+    # =========================================================
     # EXPECTED UDYAM VALUES
     # =========================================================
 
@@ -119,6 +154,37 @@ class DocumentVerifier:
         "MANUFACTURING",
         "SERVICES",
         "TRADING",
+    }
+
+    # =========================================================
+    # REQUIRED FIELDS
+    # =========================================================
+
+    REQUIRED_FIELDS = {
+        "GST_CERTIFICATE": (
+            "gstin",
+            "legal_name",
+            "constitution",
+            "registration_date",
+            "registration_type",
+            "principal_address",
+        ),
+
+        "PAN_CARD": (
+            "pan",
+            "name",
+            "father_name",
+            "date_of_birth",
+        ),
+
+        "UDYAM_CERTIFICATE": (
+            "udyam_number",
+            "enterprise_name",
+            "enterprise_type",
+            "social_category",
+            "date_of_incorporation",
+            "udyam_registration_date",
+        ),
     }
 
     # =========================================================
@@ -195,6 +261,72 @@ class DocumentVerifier:
         return True
 
     @classmethod
+    def _contains_field_label_contamination(
+        cls,
+        value: object,
+    ) -> bool:
+        """
+        Detect whether a name/text field has been contaminated
+        by an adjacent GST field label.
+
+        When the field boundary detector fails to stop at the
+        correct position, the captured value may include the
+        label text of the NEXT field, for example:
+
+            "SOME COMPANY Trade Name ANOTHER COMPANY"
+            "PROPRIETOR Constitution of Business Proprietorship"
+
+        This is a general, document-agnostic check: it looks for
+        known GST field label fragments as whole-word matches
+        inside the extracted value.
+
+        It does NOT check for any specific company name, value,
+        or document.  It only checks structural contamination.
+
+        Conservative design:
+          - Uses word-boundary anchors to avoid false positives
+            on business names that happen to contain common words
+            (e.g. "Registration Services Pvt Ltd" would NOT
+            trigger because we check for the FULL label phrase).
+          - Multi-word labels checked as a unit.
+        """
+
+        text = cls._clean(value).upper()
+
+        if not text:
+            return False
+
+        # Ordered from most specific to least, to avoid early
+        # false positives on partial overlaps.
+        contamination_labels = (
+            r"TRADE\s+NAME",
+            r"CONSTITUTION\s+OF\s+BUSINESS",
+            r"ADDRESS\s+OF\s+PRINCIPAL",
+            r"PRINCIPAL\s+(?:PLACE\s+OF\s+BUSINESS|ADDRESS)",
+            r"DATE\s+OF\s+(?:LIABILITY|VALIDITY|REGISTRATION|ISSUE)",
+            r"TYPE\s+OF\s+REGISTRATION",
+            r"REGISTRATION\s+(?:DATE|STATUS|TYPE)",
+            r"PARTICULARS\s+OF\s+APPROVING",
+            r"PERIOD\s+OF\s+VALIDITY",
+            r"DATE\s+OF\s+ISSUE\s+OF\s+CERTIFICATE",
+            r"BUSINESS\s*[:\-]",
+            r"^\s*BUSINESS\b",
+        )
+
+
+        for label_fragment in contamination_labels:
+
+            if re.search(
+                rf"\b{label_fragment}\b",
+                text,
+                re.IGNORECASE,
+            ):
+                return True
+
+        return False
+
+
+    @classmethod
     def _looks_like_ocr_garbage(
         cls,
         value: object,
@@ -205,6 +337,13 @@ class DocumentVerifier:
         This does not attempt to correct OCR.
 
         It only identifies suspicious output.
+
+        Checks (in order):
+          1. Empty / whitespace only
+          2. Excessive ASCII punctuation ratio (> 35 %)
+          3. Non-ASCII Unicode symbols  ← Phase 1 addition
+          4. Repeated bracket/pipe sequences
+          5. Known OCR corruption patterns
         """
 
         text = cls._clean(
@@ -215,7 +354,7 @@ class DocumentVerifier:
             return True
 
         # -----------------------------------------------------
-        # Excessive punctuation.
+        # Excessive ASCII punctuation.
         # -----------------------------------------------------
 
         punctuation_count = sum(
@@ -231,6 +370,51 @@ class DocumentVerifier:
             return True
 
         # -----------------------------------------------------
+        # Non-ASCII Unicode symbols.
+        #
+        # Indian government document field values (legal names,
+        # trade names, constitutions, addresses) are written in
+        # standard ASCII only.
+        #
+        # Characters with ord > 127 that are NOT standard
+        # Latin-extended letters (ord 192-687, covering
+        # Latin Extended-A, Extended-B, and IPA extensions
+        # used in occasional transliterations) are unambiguous
+        # OCR artifacts:
+        #
+        #   U+20AC €  Euro sign         — scanner symbol
+        #   U+201C "  Left dbl quote    — smart quote
+        #   U+201D "  Right dbl quote   — smart quote
+        #   U+2018 '  Left sgl quote    — smart quote
+        #   U+2019 '  Right sgl quote   — smart quote (and apostrophe lookalike)
+        #   U+007B {  Left curly brace  — (ASCII, caught by punctuation ratio)
+        #
+        # A single such character is sufficient evidence.
+        # -----------------------------------------------------
+
+        # Upper bound of Latin Extended / IPA Extensions block.
+        _LATIN_EXTENDED_MAX = 687  # U+02AF
+
+        for character in text:
+
+            code = ord(character)
+
+            if code <= 127:
+                # Standard 7-bit ASCII — always acceptable.
+                continue
+
+            if 192 <= code <= _LATIN_EXTENDED_MAX:
+                # Latin Extended-A/B and IPA — acceptable in
+                # transliterated Indian names.
+                continue
+
+            # Any other non-ASCII character is a Unicode symbol
+            # or unusual punctuation that should not appear in
+            # a government document field value extracted via
+            # OCR.
+            return True
+
+        # -----------------------------------------------------
         # Repeated unusual symbols.
         # -----------------------------------------------------
 
@@ -241,7 +425,7 @@ class DocumentVerifier:
             return True
 
         # -----------------------------------------------------
-        # OCR-like corruption.
+        # Known OCR corruption patterns.
         # -----------------------------------------------------
 
         suspicious_patterns = [
@@ -450,6 +634,14 @@ class DocumentVerifier:
 
         # -----------------------------------------------------
         # Legal name
+        #
+        # In addition to the standard meaningful-text and
+        # garbage checks, verify that the extracted name has
+        # not been contaminated by an adjacent field label.
+        # Field contamination (e.g. the value ending with
+        # "Trade Name ANOTHER CO") means the extractor failed
+        # to stop at the correct boundary.  Such a value is
+        # preserved for human review but not auto-verified.
         # -----------------------------------------------------
 
         if "legal_name" in data:
@@ -463,6 +655,9 @@ class DocumentVerifier:
                     value
                 )
                 and not cls._looks_like_ocr_garbage(
+                    value
+                )
+                and not cls._contains_field_label_contamination(
                     value
                 )
             ):
@@ -494,6 +689,9 @@ class DocumentVerifier:
                 and not cls._looks_like_ocr_garbage(
                     value
                 )
+                and not cls._contains_field_label_contamination(
+                    value
+                )
             ):
 
                 verified_fields.append(
@@ -508,22 +706,25 @@ class DocumentVerifier:
 
         # -----------------------------------------------------
         # Constitution
+        #
+        # Constitution is verified only when the extracted
+        # value exactly matches a known constitution type
+        # (uppercased).  Raw OCR strings such as "Limited
+        # Liability Part ship" do NOT match any known type
+        # and are placed in fields_requiring_review so a
+        # human reviewer can confirm the correct value.
+        #
+        # This approach is consistent with how registration_type
+        # is validated — only known enum values are verified.
         # -----------------------------------------------------
 
         if "constitution" in data:
 
-            value = data[
-                "constitution"
-            ]
+            value = cls._clean(
+                data["constitution"]
+            ).upper()
 
-            if (
-                cls._is_meaningful_text(
-                    value
-                )
-                and not cls._looks_like_ocr_garbage(
-                    value
-                )
-            ):
+            if value in cls.KNOWN_CONSTITUTION_TYPES:
 
                 verified_fields.append(
                     "constitution"
@@ -634,6 +835,22 @@ class DocumentVerifier:
 
         # -----------------------------------------------------
         # Principal address
+        #
+        # An address is verified when:
+        #   1. It is meaningful text (>= 10 chars)
+        #   2. It does not look like OCR garbage globally
+        #   3. Its leading content does not start with OCR noise
+        #
+        # Check 3 catches the common fallback-path artefact where
+        # the address label was split by OCR noise and the
+        # captured value begins with junk such as:
+        #
+        #   "TOW! . SAVIOUR NISLE CROSSINGS: Business IBLIC..."
+        #
+        # An address beginning with an all-caps token immediately
+        # followed by '!' or '?' is a reliable OCR noise signal.
+        # The address is preserved in extracted_data but placed
+        # in fields_requiring_review so a human can confirm.
         # -----------------------------------------------------
 
         if "principal_address" in data:
@@ -641,6 +858,13 @@ class DocumentVerifier:
             value = data[
                 "principal_address"
             ]
+
+            leading_noise = bool(
+                re.match(
+                    r"^[A-Z]{2,}\s*[!?]",
+                    cls._clean(value),
+                )
+            )
 
             if (
                 cls._is_meaningful_text(
@@ -650,6 +874,7 @@ class DocumentVerifier:
                 and not cls._looks_like_ocr_garbage(
                     value
                 )
+                and not leading_noise
             ):
 
                 verified_fields.append(
@@ -1165,6 +1390,42 @@ class DocumentVerifier:
             errors = [
                 "Unsupported document type for local validation"
             ]
+
+        # -----------------------------------------------------
+        # Check required fields.
+        #
+        # A field that is completely missing cannot be
+        # considered locally verified.
+        # -----------------------------------------------------
+
+        required_fields = self.REQUIRED_FIELDS.get(
+            document_type,
+            (),
+        )
+
+        for field_name in required_fields:
+
+            if field_name not in extracted_data:
+
+                if field_name not in review_fields:
+                    review_fields.append(
+                        field_name
+                    )
+
+        # -----------------------------------------------------
+        # Remove fields from verified_fields if they are also
+        # marked for review.
+        # -----------------------------------------------------
+
+        review_set = set(
+            review_fields
+        )
+
+        verified_fields = [
+            field
+            for field in verified_fields
+            if field not in review_set
+        ]
 
         # -----------------------------------------------------
         # Remove duplicate fields.
