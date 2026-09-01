@@ -1,30 +1,38 @@
 """
 Document processing pipeline for BidSure AI.
 
-This service orchestrates:
-1. Document loading / text extraction
+Team 1 responsibilities:
+
+1. Document loading / OCR
 2. Document classification
-3. Document field extraction
-4. Standard module-contract output
+3. Structured field extraction
+4. Local extraction-quality validation
+5. Standard module-contract output
 
-It does not contain extraction, classification, or field-extraction
-rules itself.
+IMPORTANT:
 
-Those responsibilities remain in:
-- DocumentLoader
-- DocumentClassifier
-- FieldExtractor
+The verifier performs LOCAL extraction validation only.
+
+It does NOT:
+- verify GST registration with the government
+- verify PAN with the government
+- verify Udyam with the government
+- prove document authenticity
+
+External/government verification belongs to Team 2.
 """
 
 from .classifier import DocumentClassifier
 from .document_loader import DocumentLoader
 from .field_extractor import FieldExtractor
+from .verifier import DocumentVerifier
 
 
 class DocumentProcessor:
     """
     Orchestrates document extraction, classification,
-    structured field extraction, and contract formatting.
+    structured field extraction, local extraction-quality
+    validation, and contract formatting.
     """
 
     def __init__(
@@ -32,6 +40,7 @@ class DocumentProcessor:
         document_loader: DocumentLoader | None = None,
         classifier: DocumentClassifier | None = None,
         field_extractor: FieldExtractor | None = None,
+        verifier: DocumentVerifier | None = None,
     ):
         """
         Initialize the document processing pipeline.
@@ -57,6 +66,209 @@ class DocumentProcessor:
             else FieldExtractor()
         )
 
+        self.verifier = (
+            verifier
+            if verifier is not None
+            else DocumentVerifier()
+        )
+
+    # =========================================================
+    # EXTRACTION QUALITY
+    # =========================================================
+
+    @staticmethod
+    def _build_extraction_quality(
+        verification: dict,
+        extracted_data: dict,
+    ) -> dict:
+        """
+        Build Team 1 extraction-quality information.
+
+        This measures whether extracted fields pass local
+        structural/semantic validation.
+
+        It does NOT mean that the document has been
+        externally verified.
+
+        Quality score:
+
+            verified fields
+            -------------------------------
+            verified fields + review fields
+
+        Example:
+
+            8 valid + 2 review
+            = 8 / 10
+            = 0.80
+
+        Args:
+            verification:
+                Result returned by DocumentVerifier.
+
+            extracted_data:
+                Fields returned by FieldExtractor.
+
+        Returns:
+            Dictionary containing extraction-quality
+            information.
+        """
+
+        if not isinstance(
+            verification,
+            dict,
+        ):
+            verification = {}
+
+        if not isinstance(
+            extracted_data,
+            dict,
+        ):
+            extracted_data = {}
+
+        verified_fields = verification.get(
+            "verified_fields",
+            [],
+        )
+
+        fields_requiring_review = verification.get(
+            "fields_requiring_review",
+            [],
+        )
+
+        errors = verification.get(
+            "errors",
+            [],
+        )
+
+        if not isinstance(
+            verified_fields,
+            list,
+        ):
+            verified_fields = []
+
+        if not isinstance(
+            fields_requiring_review,
+            list,
+        ):
+            fields_requiring_review = []
+
+        if not isinstance(
+            errors,
+            list,
+        ):
+            errors = []
+
+        # -----------------------------------------------------
+        # Remove duplicates while preserving order.
+        # -----------------------------------------------------
+
+        verified_fields = list(
+            dict.fromkeys(
+                verified_fields
+            )
+        )
+
+        fields_requiring_review = list(
+            dict.fromkeys(
+                fields_requiring_review
+            )
+        )
+
+        # -----------------------------------------------------
+        # A field should never simultaneously appear as
+        # verified and requiring review.
+        # -----------------------------------------------------
+
+        verified_set = set(
+            verified_fields
+        )
+
+        fields_requiring_review = [
+            field
+            for field in fields_requiring_review
+            if field not in verified_set
+        ]
+
+        # -----------------------------------------------------
+        # Calculate quality score.
+        #
+        # IMPORTANT:
+        #
+        # Review fields are included in the denominator.
+        #
+        # Therefore:
+        #
+        #   8 verified + 2 review = 0.80
+        #
+        # instead of incorrectly returning 1.00.
+        # -----------------------------------------------------
+
+        validated_field_count = (
+            len(verified_fields)
+            + len(fields_requiring_review)
+        )
+
+        if validated_field_count == 0:
+
+            quality_score = 0.0
+
+        else:
+
+            quality_score = (
+                len(verified_fields)
+                / validated_field_count
+            )
+
+        quality_score = max(
+            0.0,
+            min(
+                1.0,
+                quality_score,
+            ),
+        )
+
+        # -----------------------------------------------------
+        # Determine status.
+        # -----------------------------------------------------
+
+        if errors:
+
+            status = "REVIEW_REQUIRED"
+
+        elif fields_requiring_review:
+
+            status = "REVIEW_REQUIRED"
+
+        elif verified_fields:
+
+            status = "PASS"
+
+        elif extracted_data:
+
+            status = "REVIEW_REQUIRED"
+
+        else:
+
+            status = "REVIEW_REQUIRED"
+
+        return {
+            "status": status,
+            "quality_score": round(
+                quality_score,
+                2,
+            ),
+            "verified_fields": verified_fields,
+            "fields_requiring_review": (
+                fields_requiring_review
+            ),
+            "errors": errors,
+        }
+
+    # =========================================================
+    # CONTRACT BUILDER
+    # =========================================================
+
     def _build_contract_result(
         self,
         status: str,
@@ -64,14 +276,19 @@ class DocumentProcessor:
         extracted_data: dict,
         confidence: float,
         errors: list[str],
+        verification: dict | None = None,
+        extraction_quality: dict | None = None,
     ) -> dict:
         """
-        Build the standard Document Intelligence module output.
+        Build the standard Document Intelligence contract.
 
-        This is the interface that other BidSure modules can consume.
+        Existing fields are preserved for compatibility.
+
+        extraction_quality explicitly represents Team 1
+        extraction validation.
         """
 
-        return {
+        contract = {
             "success": status == "SUCCESS",
             "processing_status": status,
             "document_type": document_type,
@@ -80,7 +297,37 @@ class DocumentProcessor:
             "errors": errors,
         }
 
-    def process(self, file_path: str) -> dict:
+        # -----------------------------------------------------
+        # Keep the existing verification field for backward
+        # compatibility.
+        #
+        # This is LOCAL validation only.
+        # -----------------------------------------------------
+
+        if verification is not None:
+
+            contract["verification"] = verification
+
+        # -----------------------------------------------------
+        # Explicit Team 1 extraction-quality result.
+        # -----------------------------------------------------
+
+        if extraction_quality is not None:
+
+            contract["extraction_quality"] = (
+                extraction_quality
+            )
+
+        return contract
+
+    # =========================================================
+    # MAIN PIPELINE
+    # =========================================================
+
+    def process(
+        self,
+        file_path: str,
+    ) -> dict:
         """
         Process a document from file path to structured result.
 
@@ -96,19 +343,16 @@ class DocumentProcessor:
               ↓
             FieldExtractor
               ↓
-            contract result
-
-        Args:
-            file_path: Path to the document.
-
-        Returns:
-            Dictionary containing detailed internal results and
-            the standard module-contract result.
+            DocumentVerifier
+              ↓
+            Extraction Quality
+              ↓
+            Contract
         """
 
-        # ---------------------------------------------------------
-        # 1. Extract document text
-        # ---------------------------------------------------------
+        # =====================================================
+        # 1. DOCUMENT LOADING / OCR
+        # =====================================================
 
         extraction_result = (
             self.document_loader.load_and_extract(
@@ -116,9 +360,9 @@ class DocumentProcessor:
             )
         )
 
-        # ---------------------------------------------------------
-        # 2. Check extraction result
-        # ---------------------------------------------------------
+        # =====================================================
+        # 2. CHECK EXTRACTION RESULT
+        # =====================================================
 
         raw_text = extraction_result.get(
             "raw_text",
@@ -129,57 +373,94 @@ class DocumentProcessor:
             extraction_result.get("status") != "SUCCESS"
             or not raw_text.strip()
         ):
+
             classification_result = (
                 self.classifier.classify("")
             )
 
-            contract_result = self._build_contract_result(
-                status="FAIL",
-                document_type=classification_result.get(
-                    "document_type",
+            verification_result = (
+                self.verifier.verify(
                     "UNKNOWN",
-                ),
-                extracted_data={},
-                confidence=classification_result.get(
-                    "confidence",
-                    0.0,
-                ),
-                errors=[
-                    "Document text extraction failed"
-                ],
+                    {},
+                )
+            )
+
+            extraction_quality = (
+                self._build_extraction_quality(
+                    verification_result,
+                    {},
+                )
+            )
+
+            contract_result = (
+                self._build_contract_result(
+                    status="FAIL",
+                    document_type=(
+                        classification_result.get(
+                            "document_type",
+                            "UNKNOWN",
+                        )
+                    ),
+                    extracted_data={},
+                    confidence=(
+                        classification_result.get(
+                            "confidence",
+                            0.0,
+                        )
+                    ),
+                    errors=[
+                        "Document text extraction failed"
+                    ],
+                    verification=verification_result,
+                    extraction_quality=(
+                        extraction_quality
+                    ),
+                )
             )
 
             return {
                 "status": "FAIL",
-                "file_path": extraction_result.get(
-                    "file_path",
-                    file_path,
+                "file_path": (
+                    extraction_result.get(
+                        "file_path",
+                        file_path,
+                    )
                 ),
                 "extraction": extraction_result,
                 "classification": classification_result,
                 "extracted_data": {},
+                "verification": verification_result,
+                "extraction_quality": (
+                    extraction_quality
+                ),
                 "contract": contract_result,
             }
 
-        # ---------------------------------------------------------
-        # 3. Classify extracted text
-        # ---------------------------------------------------------
+        # =====================================================
+        # 3. CLASSIFICATION
+        # =====================================================
 
         classification_result = (
-            self.classifier.classify(raw_text)
+            self.classifier.classify(
+                raw_text
+            )
         )
 
-        # ---------------------------------------------------------
-        # 4. Extract structured fields
-        # ---------------------------------------------------------
+        document_type = (
+            classification_result.get(
+                "document_type",
+                "UNKNOWN",
+            )
+        )
+
+        # =====================================================
+        # 4. FIELD EXTRACTION
+        # =====================================================
 
         extracted_data = {}
 
-        document_type = classification_result.get(
-            "document_type"
-        )
-
         if document_type == "GST_CERTIFICATE":
+
             extracted_data = (
                 self.field_extractor.extract_gst_fields(
                     raw_text
@@ -187,6 +468,7 @@ class DocumentProcessor:
             )
 
         elif document_type == "PAN_CARD":
+
             extracted_data = (
                 self.field_extractor.extract_pan_fields(
                     raw_text
@@ -194,41 +476,84 @@ class DocumentProcessor:
             )
 
         elif document_type == "UDYAM_CERTIFICATE":
+
             extracted_data = (
                 self.field_extractor.extract_udyam_fields(
                     raw_text
                 )
             )
 
-        # Unknown document types intentionally produce
-        # empty extracted_data.
+        # =====================================================
+        # 5. LOCAL EXTRACTION VALIDATION
+        # =====================================================
 
-        # ---------------------------------------------------------
-        # 5. Build standard module-contract result
-        # ---------------------------------------------------------
-
-        classification_confidence = classification_result.get(
-            "confidence",
-            0.0,
+        verification_result = (
+            self.verifier.verify(
+                document_type,
+                extracted_data,
+            )
         )
 
-        contract_result = self._build_contract_result(
-            status="SUCCESS",
-            document_type=document_type or "UNKNOWN",
-            extracted_data=extracted_data,
-            confidence=classification_confidence,
-            errors=[],
+        # =====================================================
+        # 6. EXTRACTION QUALITY
+        # =====================================================
+
+        extraction_quality = (
+            self._build_extraction_quality(
+                verification_result,
+                extracted_data,
+            )
         )
 
-        # ---------------------------------------------------------
-        # 6. Return complete result
-        # ---------------------------------------------------------
+        # =====================================================
+        # 7. CLASSIFICATION CONFIDENCE
+        # =====================================================
+
+        classification_confidence = (
+            classification_result.get(
+                "confidence",
+                0.0,
+            )
+        )
+
+        # =====================================================
+        # 8. BUILD CONTRACT
+        # =====================================================
+
+        contract_result = (
+            self._build_contract_result(
+                status="SUCCESS",
+                document_type=(
+                    document_type
+                    or "UNKNOWN"
+                ),
+                extracted_data=extracted_data,
+                confidence=(
+                    classification_confidence
+                ),
+                errors=[],
+                verification=verification_result,
+                extraction_quality=(
+                    extraction_quality
+                ),
+            )
+        )
+
+        # =====================================================
+        # 9. RETURN COMPLETE RESULT
+        # =====================================================
 
         return {
             "status": "SUCCESS",
-            "file_path": extraction_result["file_path"],
+            "file_path": extraction_result[
+                "file_path"
+            ],
             "extraction": extraction_result,
             "classification": classification_result,
             "extracted_data": extracted_data,
+            "verification": verification_result,
+            "extraction_quality": (
+                extraction_quality
+            ),
             "contract": contract_result,
         }
