@@ -183,7 +183,6 @@ class DocumentProcessor:
             "PAN_CARD": (
                 "pan",
                 "name",
-                "father_name",
                 "date_of_birth",
             ),
 
@@ -289,6 +288,59 @@ class DocumentProcessor:
                 fields_requiring_review
             ),
             "errors": errors,
+        }
+
+    @staticmethod
+    def get_team2_handoff_payload(result: dict) -> dict:
+        """
+        Build the frozen minimal handoff payload for Team 2 consumption.
+
+        Team 2 receives only clean, normalized core fields:
+        - document_type: GST_CERTIFICATE, PAN_CARD, UDYAM_CERTIFICATE, or UNKNOWN
+        - extracted_data: Dictionary of extracted structured field values
+        - extraction_status: PASS or REVIEW_REQUIRED
+
+        Internal diagnostics (raw_text, classification_evidence, ocr_candidates, etc.)
+        are explicitly excluded from this handoff payload.
+        """
+        if not isinstance(result, dict):
+            return {
+                "document_type": "UNKNOWN",
+                "extracted_data": {},
+                "extraction_status": "REVIEW_REQUIRED",
+            }
+
+        classification = result.get("classification", {})
+        if not isinstance(classification, dict):
+            classification = {}
+
+        doc_type = (
+            classification.get("document_type")
+            or result.get("document_type")
+            or "UNKNOWN"
+        )
+        if doc_type not in ("GST_CERTIFICATE", "PAN_CARD", "UDYAM_CERTIFICATE"):
+            doc_type = "UNKNOWN"
+
+        extracted_data = result.get("extracted_data", {})
+        if not isinstance(extracted_data, dict):
+            extracted_data = {}
+
+        if doc_type == "UNKNOWN":
+            extracted_data = {}
+        else:
+            extracted_data = dict(extracted_data)
+
+        quality = result.get("extraction_quality", {})
+        if not isinstance(quality, dict):
+            quality = {}
+
+        extraction_status = quality.get("status", "REVIEW_REQUIRED")
+
+        return {
+            "document_type": doc_type,
+            "extracted_data": extracted_data,
+            "extraction_status": extraction_status,
         }
 
     # =========================================================
@@ -487,13 +539,19 @@ class DocumentProcessor:
         # 4. FIELD EXTRACTION
         # =====================================================
 
+        ocr_candidates = extraction_result.get(
+            "ocr_candidates",
+            [],
+        )
+
         extracted_data = {}
 
         if document_type == "GST_CERTIFICATE":
 
             extracted_data = (
                 self.field_extractor.extract_gst_fields(
-                    raw_text
+                    raw_text,
+                    ocr_candidates=ocr_candidates,
                 )
             )
 
@@ -501,7 +559,8 @@ class DocumentProcessor:
 
             extracted_data = (
                 self.field_extractor.extract_pan_fields(
-                    raw_text
+                    raw_text,
+                    ocr_candidates=ocr_candidates,
                 )
             )
 
@@ -509,7 +568,8 @@ class DocumentProcessor:
 
             extracted_data = (
                 self.field_extractor.extract_udyam_fields(
-                    raw_text
+                    raw_text,
+                    ocr_candidates=ocr_candidates,
                 )
             )
 

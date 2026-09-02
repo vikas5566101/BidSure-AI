@@ -52,16 +52,91 @@ SUPPORTED_IMAGE_FORMATS = {
 
 # OCR configurations for photographed documents.
 #
-# PSM 6: Assumes a uniform block of text (ideal for structured table rows).
 # PSM 3: Fully automatic page segmentation (ideal for full page layout).
 # PSM 4: Single column of text of variable sizes (ideal for certificates).
-# PSM 11: Sparse text / separated text regions.
+# PSM 6: Assumes a uniform block of text (ideal for structured table rows).
+# PSM 11: Sparse text (ideal for sparse multi-column layout table cells).
 OCR_CONFIGURATIONS = (
     "--psm 3",
     "--psm 4",
     "--psm 6",
+    "--psm 11",
 )
 
+
+# ============================================================
+# IMAGE PREPROCESSING
+# ============================================================
+def _get_image_ocr_candidates(
+    file_path: str,
+) -> list[dict]:
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+    if path.suffix.lower() not in SUPPORTED_IMAGE_FORMATS:
+        raise ValueError(
+            f"Unsupported image format: {path.suffix}. "
+            f"Supported formats: {SUPPORTED_IMAGE_FORMATS}"
+        )
+    with Image.open(path) as image:
+        original = image.copy()
+
+    orig_rgb = _prepare_original(original)
+    enhanced = _prepare_enhanced(original)
+    threshold = _prepare_threshold(original)
+
+    images_to_test = [
+        ("original_upscaled", _resize_for_ocr(orig_rgb)),
+        ("enhanced_upscaled", _resize_for_ocr(enhanced)),
+        ("threshold_upscaled", _resize_for_ocr(threshold)),
+        ("original", orig_rgb),
+    ]
+
+    candidates = []
+    for variant_name, ocr_image in images_to_test:
+        for config in OCR_CONFIGURATIONS:
+            try:
+                score, text = _calculate_ocr_confidence(ocr_image, config)
+            except Exception:
+                continue
+            if not text.strip():
+                continue
+            candidates.append(
+                {
+                    "score": score,
+                    "text": text.strip(),
+                    "variant": variant_name,
+                    "config": config,
+                }
+            )
+
+    if not candidates:
+        return []
+
+    candidates.sort(
+        key=lambda candidate: (
+            candidate["score"],
+            len(candidate["text"]),
+        ),
+        reverse=True,
+    )
+    return candidates
+
+
+def extract_text_and_candidates_from_image(
+    file_path: str,
+) -> tuple[str, list[dict]]:
+    candidates = _get_image_ocr_candidates(file_path)
+    if not candidates:
+        return "", []
+    return candidates[0]["text"], candidates
+
+
+def extract_text_from_image(
+    file_path: str,
+) -> str:
+    primary_text, _ = extract_text_and_candidates_from_image(file_path)
+    return primary_text
 
 
 
@@ -467,26 +542,18 @@ def _calculate_ocr_confidence(
     )
     garbage_penalty = (garbage_chars / total_len) * 40.0
 
-    # 5. Field Extraction Richness Bonus
-    # Reward OCR outputs where key document fields (legal name, address, etc.)
-    # can be successfully identified.
-    field_bonus = 0.0
-    try:
-        from backend.app.services.document_processing.field_extractor import FieldExtractor
-        extractor = FieldExtractor()
-        extracted = extractor.extract_gst_fields(extracted_text)
-        if extracted.get("gstin"):
-            field_bonus += 5.0
-        if extracted.get("legal_name"):
-            field_bonus += 5.0
-        if extracted.get("trade_name"):
-            field_bonus += 5.0
-        if extracted.get("constitution"):
-            field_bonus += 5.0
-        if extracted.get("principal_address"):
-            field_bonus += 10.0
-    except Exception:
-        pass
+    # 5. Generic Structural Label & Key-Value Structure Bonus
+    # Reward OCR outputs containing key-value structures, colons, or label separators
+    # common across GST, PAN, Udyam, and other official documents without document-specific coupling.
+    structural_label_bonus = 0.0
+    label_structure_matches = len(
+        re.findall(
+            r"\b(?:Name|Address|Registration|Date|Number|Type|Category|GSTIN|PAN|Udyam|Details|Centre|Department)\s*[:\-|\u2014]\s*\S+",
+            extracted_text,
+            re.IGNORECASE,
+        )
+    )
+    structural_label_bonus = min(20.0, label_structure_matches * 4.0)
 
     # 6. Label Integrity & Mangled Header Penalty
     # Detect common OCR fragmentation where PSM mode mangles field headers
@@ -509,7 +576,7 @@ def _calculate_ocr_confidence(
             + keyword_component
             + identifier_bonus
             + date_bonus
-            + field_bonus
+            + structural_label_bonus
             - garbage_penalty
             - mangled_label_penalty,
         ),

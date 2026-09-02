@@ -173,7 +173,6 @@ class DocumentVerifier:
         "PAN_CARD": (
             "pan",
             "name",
-            "father_name",
             "date_of_birth",
         ),
 

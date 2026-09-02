@@ -71,36 +71,39 @@ class FieldExtractor:
 
     GST_FIELD_LABELS = (
         # Identity
-        r"Legal\s*Name",
-        r"Trade\s*Name(?:\s*,?\s*if\s*any)?",
-        r"Additional\s*Trade\s*Names?(?:\s*,?\s*if\s*any)?",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Le[g|a|r]*al\s*Name",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Tr[a-z]{1,3}\s*Name(?:\s*,?\s*if\s*any)?",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Trade\s*Name(?:\s*,?\s*if\s*any)?",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Additional\s*Trade\s*Names?(?:\s*,?\s*if\s*any)?",
 
         # Constitution / business
-        r"Constitution(?:\s*(?:of\s*)?Business)?",
-        r"Business\s*Type",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Constitution(?:\s*(?:of\s*)?Business)?",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Business\s*Type",
 
         # Address
-        r"Address\s*of\s*Principal\s*Place\s*of\s*Business",
-        r"Principal\s*Place\s*of\s*Business",
-        r"Principal\s*Address",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Address\s*of\s*Principal\s*Place\s*of\s*Business",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Add?r[e|i]{1,3}ss\s+of\s+P[r|e]in[a-z]*al\s+(?:P[l|m]ace\s+of\s+)?Business",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Principal\s*Place\s*of\s*Business",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Principal\s*Address",
 
         # Dates
-        r"Date\s*of\s*Liability",
-        r"Registration\s*Date",
-        r"Date\s*of\s*Registration",
-        r"Period\s*of\s*Validity",
-        r"Date\s*of\s*Validity",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Date\s*of\s*Liability",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Thate\s*e[f|t]\s*Liability",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Registration\s*Date",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Date\s*of\s*Registration",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Period\s*of\s*Validity",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Date\s*of\s*Validity",
 
         # Registration
-        r"Type\s*of\s*Registration",
-        r"Registration\s*Type",
-        r"Registration\s*Status",
-        r"Status\s*of\s*Registration",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Type\s*of\s*Registration",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Registration\s*Type",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Registration\s*Status",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Status\s*of\s*Registration",
 
         # Authority / certificate
-        r"Particulars\s*of\s*Approving\s*Authority",
-        r"Date\s*of\s*Issue\s*of\s*Certificate",
-        r"Date\s*of\s*Issue",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Particulars\s*of\s*Approving\s*Authority",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Date\s*of\s*Issue\s*of\s*Certificate",
+        r"(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Date\s*of\s*Issue",
     )
 
     # ============================================================
@@ -333,7 +336,6 @@ class FieldExtractor:
             rf"(?="
             rf"\s+(?:{stop_labels})"
             rf"(?:\s*[:\-]|\s|$)"
-            rf"|(?<![A-Za-z])(?:{stop_labels})"
             rf"|(?=[A-Z](?:Constitution|Business\s*Type|"
             rf"Address\s*of\s*Principal|Principal\s*Address|"
             rf"Date\s*of\s*Liability|Type\s*of\s*Registration|"
@@ -657,9 +659,11 @@ class FieldExtractor:
                 GST\s*REGISTRATION\s*(?:NUMBER|NO)
                 |
                 REGISTRATION\s*(?:NUMBER|NO)
+                |
+                tn\s*NUMBER
             )
-            \s*[:#\-]?\s*
-            ([0-9A-Z]{15})
+            \s*[:#\-=\(\[\{>\s]*
+            ([0-9A-Z\(\)\[\]\{\}\:;\-\.\s]{13,22})
             """,
             re.IGNORECASE | re.VERBOSE,
         )
@@ -669,9 +673,12 @@ class FieldExtractor:
         for match in labelled_pattern.finditer(
             normalized_text
         ):
-            candidates.append(
-                match.group(1).upper()
-            )
+            raw = match.group(1)
+            cleaned = re.sub(r"[^A-Z0-9]", "", raw.upper())
+            if len(cleaned) == 14 and cleaned[0].isdigit():
+                cleaned = "0" + cleaned
+            if len(cleaned) == 15 and cleaned not in candidates:
+                candidates.append(cleaned)
 
         # --------------------------------------------------------
         # Search generic 15-character candidates.
@@ -895,6 +902,13 @@ class FieldExtractor:
         if not value:
             return None
 
+        # Truncate at next field label or table row boundary (e.g. 2. Trade Name, 2 Trae Name, 3. Constitution)
+        value = re.split(
+            r"\s+(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?(?:Tr[a-z]{1,3}\s*Name|Trade\s*Name|Constitution|Address|Date|Type|Period|Particulars)",
+            value,
+            flags=re.IGNORECASE,
+        )[0]
+
         # Strip leading OCR table index / noise prefix (e.g. [1.], Bi ice oi, [beuat are)
         value = re.sub(
             r"^(?:\[?\s*\d{1,2}\s*[.\]]?\s*|[A-Za-z]{1,2}\s+ice\s+oi\s*|\[\s*beuat\s+are\s*|[\[\]{}|\-—–]+\s*)+",
@@ -954,6 +968,13 @@ class FieldExtractor:
         if not value:
             return None
 
+        # Truncate at next field label or table row boundary
+        value = re.split(
+            r"\s+(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?(?:Additional\s*Trade|Constitution|Address|Date|Type|Period|Particulars)",
+            value,
+            flags=re.IGNORECASE,
+        )[0]
+
         value = re.split(
             r"\badditional\s+trade\s+names?"
             r"(?:\s*,?\s*if\s+any)?\b",
@@ -970,6 +991,52 @@ class FieldExtractor:
         )
 
         return FieldExtractor._clean_value(value) or None
+
+    @staticmethod
+    def _score_gst_trade_name_candidate(
+        val: str | None,
+        base_ocr_score: float,
+        frequency_count: int,
+    ) -> float:
+        if not val or not val.strip():
+            return -100.0
+
+        score = base_ocr_score / 10.0
+
+        # Penalize non-ASCII and corrupt OCR symbols
+        garbage_symbols = set("€“”«»|[]{}\\%~`_#$^&*")
+        garbage_count = sum(1 for char in val if char in garbage_symbols)
+        score -= (garbage_count * 25.0)
+
+        non_ascii_count = sum(1 for char in val if ord(char) > 127)
+        score -= (non_ascii_count * 20.0)
+
+        words = val.split()
+        if len(words) >= 2:
+            score += 15.0
+
+        entity_suffixes = (
+            "LLP",
+            "LIMITED",
+            "PVT LTD",
+            "PRIVATE LIMITED",
+            "INC",
+            "CORP",
+            "PARTNERSHIP",
+            "COMPANY",
+            "ENTERPRISES",
+            "TRADERS",
+            "INDUSTRIES",
+            "SERVICES",
+        )
+        if any(suf in val.upper() for suf in entity_suffixes):
+            score += 25.0
+
+        # Reward candidate consistency across multiple independent OCR passes
+        if frequency_count > 1:
+            score += (frequency_count - 1) * 15.0
+
+        return score
 
     # ============================================================
     # GST CONSTITUTION
@@ -1026,19 +1093,19 @@ class FieldExtractor:
         value = re.sub(r"[\s—–\-|\s=>()<>]+\d*$", "", value).strip()
         value = re.sub(r"[\s—–\-|\s=>()]+[A-Za-z0-9]\s*$", "", value).strip()
 
-        # Match against known clean constitution titles
+        # Match against known clean constitution titles (including common OCR typo variants)
         known_constitutions = [
-            "Proprietorship",
-            "Partnership",
-            "Limited Liability Partnership",
-            "Private Limited Company",
-            "Public Limited Company",
-            "Hindu Undivided Family",
-            "Society / Club / Trust / AOP",
-            "Government Department",
+            ("Proprietorship", r"Proprietorship"),
+            ("Partnership", r"Partnership"),
+            ("Limited Liability Partnership", r"Li[m|n]ited\s+Li[a-z]{4,8}ty\s+Partnership"),
+            ("Private Limited Company", r"Private\s+Limited\s+Company"),
+            ("Public Limited Company", r"Public\s+Limited\s+Company"),
+            ("Hindu Undivided Family", r"Hindu\s+Undivided\s+Family"),
+            ("Society / Club / Trust / AOP", r"Society\s*/?\s*Club"),
+            ("Government Department", r"Government\s+Department"),
         ]
-        for k_title in known_constitutions:
-            if re.search(rf"^\s*{re.escape(k_title)}\b", value, re.IGNORECASE):
+        for k_title, k_pattern in known_constitutions:
+            if re.search(rf"^\s*{k_pattern}\b", value, re.IGNORECASE):
                 return k_title
 
         return value or None
@@ -1523,6 +1590,7 @@ class FieldExtractor:
     def extract_gst_fields(
         self,
         text: str,
+        ocr_candidates: list[dict | str] | None = None,
     ) -> dict:
 
         if not text or not text.strip():
@@ -1606,11 +1674,159 @@ class FieldExtractor:
         principal_address = self._extract_gst_address(text)
 
         if principal_address:
+            result["principal_address"] = principal_address
 
-            result["principal_address"] = (
-                principal_address
+        # ========================================================
+        # MULTI-CANDIDATE RECOVERY FOR GST FIELDS
+        # ========================================================
+        if ocr_candidates:
+            entity_suffixes = (
+                "LLP",
+                "LIMITED",
+                "PVT LTD",
+                "PRIVATE LIMITED",
+                "INC",
+                "CORP",
+                "PARTNERSHIP",
+                "COMPANY",
             )
 
+            primary_legal = result.get("legal_name")
+            is_suspicious_legal = (
+                not primary_legal
+                or not any(suf in (primary_legal or "").upper() for suf in entity_suffixes)
+            )
+
+            if is_suspicious_legal:
+                scored_legals: list[tuple[float, str]] = []
+                for c in ocr_candidates:
+                    cand_text = c.get("text", "") if isinstance(c, dict) else str(c)
+                    cand_score = c.get("score", 50.0) if isinstance(c, dict) else 50.0
+
+                    v1 = self._extract_gst_legal_name(cand_text)
+
+                    v2 = None
+                    m = re.search(
+                        r"([^\n]+)\s*\n\s*(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Le[g|a|r]*al\s*Name",
+                        cand_text,
+                        re.IGNORECASE,
+                    )
+                    if m:
+                        raw_v = m.group(1).strip()
+                        cleaned_v = self._clean_value(
+                            re.sub(
+                                r"^(?:\[?\s*\d{1,2}\s*[.\]]?\s*|[A-Za-z]{1,2}\s+ice\s+oi\s*|\[\s*beuat\s+are\s*|[\[\]{}|\-—–]+\s*)+",
+                                "",
+                                raw_v,
+                                flags=re.IGNORECASE,
+                            )
+                        )
+                        if cleaned_v and len(cleaned_v) >= 3 and self._is_reasonable_field_value(cleaned_v):
+                            v2 = cleaned_v
+
+                    for v in set(filter(None, (v1, v2))):
+                        sc = cand_score / 10.0
+                        if any(suf in v.upper() for suf in entity_suffixes):
+                            sc += 30.0
+                        if len(v.split()) >= 2:
+                            sc += 10.0
+                        scored_legals.append((sc, v))
+
+                if scored_legals:
+                    scored_legals.sort(key=lambda x: x[0], reverse=True)
+                    top_score, top_legal = scored_legals[0]
+                    top_legals = [v for sc, v in scored_legals if sc >= top_score - 5.0]
+                    distinct_top_names = {re.sub(r"[^A-Z]", "", v.upper()) for v in top_legals}
+                    if len(distinct_top_names) <= 2:
+                        result["legal_name"] = top_legal
+
+            # -----------------------------------------------------
+            # Trade name multi-candidate recovery
+            # -----------------------------------------------------
+            primary_trade = result.get("trade_name")
+            extracted_trades: list[tuple[str, float]] = []
+            for c in ocr_candidates:
+                cand_text = c.get("text", "") if isinstance(c, dict) else str(c)
+                cand_score = c.get("score", 50.0) if isinstance(c, dict) else 50.0
+
+                v1 = self._extract_gst_trade_name(cand_text)
+                v2 = None
+                m = re.search(
+                    r"([^\n]+)\s*\n\s*(?:\[?\s*\d{1,2}\s*[.\]]?\s*)?Tr[a-z]{1,3}\s*Name",
+                    cand_text,
+                    re.IGNORECASE,
+                )
+                if m:
+                    raw_v = m.group(1).strip()
+                    cleaned_v = self._clean_value(
+                        re.sub(
+                            r"^(?:\[?\s*\d{1,2}\s*[.\]]?\s*|[A-Za-z]{1,2}\s+ice\s+oi\s*|\[\s*beuat\s+are\s*|[\[\]{}|\-—–]+\s*)+",
+                            "",
+                            raw_v,
+                            flags=re.IGNORECASE,
+                        )
+                    )
+                    if cleaned_v and len(cleaned_v) >= 3 and self._is_reasonable_field_value(cleaned_v):
+                        v2 = cleaned_v
+
+                for v in set(filter(None, (v1, v2))):
+                    extracted_trades.append((v, cand_score))
+
+            if extracted_trades:
+                from collections import Counter
+
+                norm_counts = Counter(re.sub(r"[^A-Z0-9]", "", v.upper()) for v, _ in extracted_trades)
+
+                primary_score = (
+                    FieldExtractor._score_gst_trade_name_candidate(
+                        primary_trade,
+                        50.0,
+                        norm_counts.get(re.sub(r"[^A-Z0-9]", "", (primary_trade or "").upper()), 1),
+                    )
+                    if primary_trade
+                    else -100.0
+                )
+
+                scored_trades = [
+                    (
+                        FieldExtractor._score_gst_trade_name_candidate(
+                            v,
+                            sc,
+                            norm_counts.get(re.sub(r"[^A-Z0-9]", "", v.upper()), 1),
+                        ),
+                        v,
+                    )
+                    for v, sc in extracted_trades
+                ]
+                scored_trades.sort(key=lambda x: x[0], reverse=True)
+                top_alt_score, top_alt_trade = scored_trades[0]
+
+                if top_alt_score > primary_score + 15.0 and top_alt_score > 0.0:
+                    result["trade_name"] = top_alt_trade
+
+            if not result.get("principal_address"):
+                for c in ocr_candidates:
+                    cand_text = c.get("text", "") if isinstance(c, dict) else str(c)
+                    addr = self._extract_gst_address(cand_text)
+                    if addr and len(addr) >= 15:
+                        result["principal_address"] = addr
+                        break
+
+            if not result.get("registration_date"):
+                for c in ocr_candidates:
+                    cand_text = c.get("text", "") if isinstance(c, dict) else str(c)
+                    val_dt = self._find_label_value(
+                        cand_text,
+                        ("registration date", "date of registration", "date of liability"),
+                    )
+                    dt = self._normalize_date(val_dt)
+                    if dt:
+                        result["registration_date"] = dt
+                        break
+
+        # Re-check address details if address was set/updated
+        principal_address = result.get("principal_address")
+        if principal_address:
             structured_address_labels = (
                 "building no",
                 "flat no",
@@ -1873,8 +2089,7 @@ class FieldExtractor:
                     return result
 
         # ------------------------------------------------------------
-        # PATH 2: Layout extraction for collapsed single-line text
-        # (Without line breaks or explicit field labels, do NOT guess father_name boundary)
+        # PATH 2: Layout extraction for single-line or collapsed layout text
         # ------------------------------------------------------------
         normalized = re.sub(
             r"\s+",
@@ -1903,24 +2118,38 @@ class FieldExtractor:
                 flags=re.IGNORECASE,
             ).strip()
 
-            # Extract clean candidate name from segment after GOVT OF INDIA
-            # Without explicit line breaks or field labels, father_name must not be guessed
-            uppercase_blocks = []
-            matches = re.finditer(
-                r"\b([A-Z]{2,}(?:\s+[A-Z]{2,})+|[A-Z]{2,})\b",
-                after_govt,
+            noise_pattern = (
+                r"\b(?:INCOME|TAX|DEPARTMENT|GOVT|INDIA|PERMANENT|ACCOUNT|"
+                r"NUMBER|SIGNATURE|CARD|OFFICIAL|GOVERNMENT)\b"
             )
-            for m in matches:
-                block = m.group(1).strip()
-                if not re.search(r"\b(?:INCOME|TAX|DEPARTMENT|GOVT|INDIA|PERMANENT|ACCOUNT|NUMBER|SIGNATURE)\b", block, re.IGNORECASE):
-                    uppercase_blocks.append(block)
 
-            if uppercase_blocks:
-                result["name"] = uppercase_blocks[0]
+            matches = list(re.finditer(r"\b([A-Z]{2,}(?:\s+[A-Z]{2,})+)\b", after_govt))
+            blocks = []
+            valid_matches = []
+            for m in matches:
+                b = m.group(1).strip()
+                if not re.search(noise_pattern, b, re.IGNORECASE):
+                    cleaned = FieldExtractor._clean_pan_person_name(b)
+                    if cleaned and len(cleaned.split()) >= 2:
+                        blocks.append(cleaned)
+                        valid_matches.append(m)
+
+            if len(blocks) >= 2 and len(valid_matches) >= 2:
+                m1, m2 = valid_matches[0], valid_matches[1]
+                between = after_govt[m1.end():m2.start()]
+                if re.search(r"[A-Za-z0-9]", between):
+                    result["name"] = blocks[0]
+                    result["father_name"] = blocks[1]
+                else:
+                    cleaned_all = FieldExtractor._clean_pan_person_name(after_govt)
+                    if cleaned_all:
+                        result["name"] = cleaned_all
+            elif blocks:
+                result["name"] = blocks[0]
             else:
-                cleaned = FieldExtractor._clean_pan_person_name(after_govt)
-                if cleaned:
-                    result["name"] = cleaned
+                cleaned_all = FieldExtractor._clean_pan_person_name(after_govt)
+                if cleaned_all:
+                    result["name"] = cleaned_all
 
             if "name" not in result:
                 before_govt = normalized[:govt_match.start()]
@@ -1936,9 +2165,6 @@ class FieldExtractor:
 
         return result
 
-
-
-
     # ============================================================
     # PAN FIELD EXTRACTION
     # ============================================================
@@ -1946,6 +2172,7 @@ class FieldExtractor:
     def extract_pan_fields(
         self,
         text: str,
+        ocr_candidates: list[dict | str] | None = None,
     ) -> dict:
 
         if not text or not text.strip():
@@ -2039,6 +2266,41 @@ class FieldExtractor:
 
             if dob:
                 result["date_of_birth"] = dob
+
+        # ========================================================
+        # MULTI-CANDIDATE RECOVERY FOR PAN FIELDS
+        # ========================================================
+        if ocr_candidates:
+            from collections import Counter
+
+            # 1. Multi-candidate DOB consensus
+            dobs: list[str] = []
+            for c in ocr_candidates:
+                cand_text = c.get("text", "") if isinstance(c, dict) else str(c)
+                m = re.search(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{4})\b", cand_text)
+                if m:
+                    dt = self._normalize_date(m.group(1))
+                    if dt:
+                        dobs.append(dt)
+
+            if dobs:
+                dob_counts = Counter(dobs)
+                top_dob, top_count = dob_counts.most_common(1)[0]
+                primary_dob = result.get("date_of_birth")
+                if top_count > dob_counts.get(primary_dob, 0):
+                    result["date_of_birth"] = top_dob
+
+            # 2. Multi-candidate name & father_name recovery if missing
+            if "name" not in result or "father_name" not in result:
+                for c in ocr_candidates:
+                    cand_text = c.get("text", "") if isinstance(c, dict) else str(c)
+                    cand_layout = self._extract_pan_ocr_layout_fields(cand_text, pan=pan)
+                    if "name" not in result and "name" in cand_layout:
+                        result["name"] = cand_layout["name"]
+                    if "father_name" not in result and "father_name" in cand_layout:
+                        result["father_name"] = cand_layout["father_name"]
+                    if "name" in result and "father_name" in result:
+                        break
 
         return result
 
@@ -2299,8 +2561,196 @@ class FieldExtractor:
                 flags=re.IGNORECASE,
             )[0]
 
-        value = re.sub(r"[|\:_—\-]+$", "", value).strip()
-        return FieldExtractor._clean_value(value)
+        cleaned = FieldExtractor._clean_value(value)
+        # Strip leading/trailing OCR quotation, guillemet, bracket, and boundary symbol artifacts
+        cleaned = re.sub(
+            r"^[|\:_—\-«»“”‘’\"'\s]+|[|\:_—\-«»“”‘’\"'\s]+$",
+            "",
+            cleaned,
+        ).strip()
+        return cleaned
+
+    @staticmethod
+    def _score_udyam_enterprise_name_candidate(
+        val: str | None,
+        base_ocr_score: float,
+        frequency_count: int,
+    ) -> float:
+        if not val or not val.strip():
+            return -100.0
+
+        val = val.strip()
+        score = base_ocr_score / 10.0
+
+        # Penalize non-ASCII and corrupt OCR symbols
+        garbage_symbols = set("€“”«»|[]{}\\%~`_#$^&*")
+        garbage_count = sum(1 for char in val if char in garbage_symbols)
+        score -= (garbage_count * 25.0)
+
+        non_ascii_count = sum(1 for char in val if ord(char) > 127)
+        score -= (non_ascii_count * 20.0)
+
+        # Penalize label contamination
+        label_contaminants = (
+            "OWNER NAME",
+            "PAN",
+            "GSTIN",
+            "ENTERPRISE TYPE",
+            "SNO",
+            "PROPRIETARY",
+            "SOCIAL CATEGORY",
+            "GENDER",
+            "MOBILE",
+            "EMAIL",
+            "DATE OF INCORPORATION",
+        )
+        upper_val = val.upper()
+        if any(c in upper_val for c in label_contaminants):
+            score -= 50.0
+
+        words = val.split()
+        if len(words) >= 2:
+            score += 15.0
+
+        entity_suffixes = (
+            "CARE",
+            "ENTERPRISES",
+            "TRADERS",
+            "INDUSTRIES",
+            "SERVICES",
+            "SOLUTIONS",
+            "LIMITED",
+            "LTD",
+            "PVT",
+            "LLP",
+            "COMPANY",
+            "PARTNERSHIP",
+            "STORE",
+            "MART",
+            "WORKS",
+            "CREATIONS",
+            "AGENCY",
+            "DESIGNS",
+            "TECH",
+            "TECHNOLOGIES",
+        )
+        if any(suf in upper_val for suf in entity_suffixes):
+            score += 20.0
+
+        if frequency_count > 1:
+            score += (frequency_count - 1) * 15.0
+
+        return score
+
+    @staticmethod
+    def _clean_udyam_official_address(text: str) -> str:
+        if not text:
+            return ""
+
+        stop_patterns = (
+            r"\bMobile\s+No\.?\b",
+            r"\bMobile\b",
+            r"\bEmail\s+Id\b",
+            r"\bEmail\b",
+            r"\bNational\s+Industry\s+Classification\b",
+            r"\bNIC\s+Code\b",
+            r"\bAre\s+you\s+interested\b",
+            r"\bGovernment\s+e-Market\b",
+            r"\bGeM\b",
+            r"\bTReDS\b",
+            r"\bNational\s+Career\s+Service\b",
+            r"\bNCS\b",
+            r"\bDistrict\s+Industries\s+Centre\b",
+            r"\bMSME-DFO\b",
+            r"\bDate\s+of\s+Printing\b",
+            r"\bDate\s+of\s+Udyam\s+Registration\b",
+            r"\bUnits?\b",
+        )
+
+        block = text
+        for pattern in stop_patterns:
+            block = re.split(pattern, block, maxsplit=1, flags=re.IGNORECASE)[0]
+
+        # Truncate at PIN if present
+        pin_match = re.search(r"(\bPin\s*[:\-]?\s*\d{6}|\b\d{6}\b)", block, re.IGNORECASE)
+        if pin_match:
+            block = block[:pin_match.end()]
+
+        sub_labels = [
+            r"(?:Flat|Fiat|Fia|Fla|Flau)[\s/'’‘`]*Door[\s/'’‘`]*Block\s*(?:No\.?)?",
+            r"(?:Name\s+of\s+)?Premises[\s/'’‘`]*Building",
+            r"Village[\s/'’‘`]*Town",
+            r"Village[\s/'’‘`]*Tow",
+            r"\bBlock\b",
+            r"Road[\s/'’‘`]*Street[\s/'’‘`]*Lane",
+            r"City",
+            r"State",
+            r"District",
+            r"Pin\s*Code",
+            r"Pin",
+        ]
+        pattern = r"(?:^|[\n\[\]\|\{\}\_\t\s])(?:" + "|".join(sub_labels) + r")\s*[:|\-\[\{]?\s*"
+        block = re.sub(pattern, " ", block, flags=re.IGNORECASE)
+
+        # Clean OCR table delimiters / bracket artifacts
+        block = re.sub(r"[\[\]\{\}\|_~“„”«»]", " ", block)
+
+        # Filter out isolated lowercase OCR noise tokens
+        valid_lowercase = {"near", "opposite", "behind", "next", "above", "below", "floor", "road", "street", "lane", "city", "post", "dist", "district", "via", "at", "po"}
+        tokens = block.split()
+        filtered = []
+        for token in tokens:
+            clean_tok = re.sub(r"^[^\w]+|[^\w]+$", "", token)
+            if clean_tok.islower() and len(clean_tok) >= 3 and clean_tok not in valid_lowercase:
+                continue
+            filtered.append(token)
+        block = " ".join(filtered)
+
+        block = re.sub(r"\s+[:\.]+\s+", " ", block)
+        block = re.sub(r"\s*,\s*", ", ", block)
+        block = re.sub(r"\s+", " ", block).strip()
+        block = re.sub(r"^[,\.\:\-\|\s]+|[,\.\:\-\|\s]+$", "", block)
+        return block
+
+    @staticmethod
+    def _extract_udyam_official_address(text: str) -> str | None:
+        if not text:
+            return None
+        match = re.search(
+            r"(?:(?:Off?ici?al|[A-Za-z0-9]{2,8}\s+ar?e?s?|tia)?\s*add?ress\s+of\s+Enterprise|Enterprise\s+Address)\s*[:|\-]?\s*(.+)",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return None
+        raw_addr = match.group(1)
+        cleaned = FieldExtractor._clean_udyam_official_address(raw_addr)
+        return cleaned if len(cleaned) >= 10 else None
+
+    @staticmethod
+    def _score_udyam_address_candidate(
+        val: str | None,
+        base_ocr_score: float,
+    ) -> float:
+        if not val or len(val) < 10:
+            return -100.0
+        score = base_ocr_score / 10.0
+        if re.search(r"\b\d{6}\b", val):
+            score += 30.0
+        garbage_symbols = set("€“”«»|[]{}\\%~`_#$^&*")
+        score -= sum(15.0 for char in val if char in garbage_symbols)
+
+        # Reward specific office/flat/door number pattern (e.g. OFFICE NO 102, FLAT NO 5)
+        if re.search(r"\b(?:OFFICE|FLAT|DOOR|PLOT|SHOP)\s+(?:NO\.?|NUMBER)?\s*\d+", val, re.IGNORECASE):
+            score += 25.0
+
+        if re.search(r"\bOFFICE\b|\bFLAT\b|\bDOOR\b", val, re.IGNORECASE):
+            score += 15.0
+        if re.search(r"\bFLOOR\b|\bBUILDING\b|\bPREMISES\b", val, re.IGNORECASE):
+            score += 15.0
+        if re.search(r"\bROAD\b|\bSTREET\b|\bLANE\b", val, re.IGNORECASE):
+            score += 10.0
+        return score
 
     # ============================================================
     # UDYAM EXTRACTION
@@ -2309,6 +2759,7 @@ class FieldExtractor:
     def extract_udyam_fields(
         self,
         text: str,
+        ocr_candidates: list[dict] | None = None,
     ) -> dict:
 
         if not text or not text.strip():
@@ -2318,53 +2769,92 @@ class FieldExtractor:
 
         result: dict = {}
 
+        # 1. Udyam Number
         udyam_number = self._extract_udyam_number(text)
+        if not udyam_number and ocr_candidates:
+            for cand in ocr_candidates:
+                cand_text = cand.get("text", "") if isinstance(cand, dict) else str(cand)
+                udyam_number = self._extract_udyam_number(cand_text)
+                if udyam_number:
+                    break
 
         if udyam_number:
             result["udyam_number"] = udyam_number
 
-        enterprise_name = self._find_label_value(
-            text,
-            (
-                "name of enterprise",
-                "enterprise name",
-            ),
-            (
-                "name of enterprise",
-                "enterprise name",
-                "type of enterprise",
-                "owner name",
-                "pan",
-                "do you have gstin",
-                "email id",
-                "mobile no",
-                "social category",
-                "gender",
-                "specially abled",
-                "major activity",
-                "date of incorporation",
-                "date of incorporation / registration of enterprise",
-                "date of registration of enterprise",
-                "date of commencement",
-                "udyam registration date",
-                "enterprise address",
-                "official address of enterprise",
-            ),
+        # 2. Enterprise Name with alternate OCR recovery
+        name_labels = (
+            "name of enterprise",
+            "name af enterprise",
+            "name of enerprise",
+            "name af enerprise",
+            "enterprise name",
+        )
+        stop_name_labels = (
+            "name of enterprise",
+            "enterprise name",
+            "type of enterprise",
+            "owner name",
+            "pan",
+            "do you have gstin",
+            "email id",
+            "mobile no",
+            "social category",
+            "gender",
+            "specially abled",
+            "major activity",
+            "date of incorporation",
+            "date of incorporation / registration of enterprise",
+            "date of registration of enterprise",
+            "date of commencement",
+            "udyam registration date",
+            "enterprise address",
+            "official address of enterprise",
         )
 
-        if enterprise_name:
+        all_ocr_sources: list[tuple[str, float]] = [(text, 50.0)]
+        if ocr_candidates:
+            for cand in ocr_candidates:
+                if isinstance(cand, dict):
+                    cand_t = cand.get("text", "")
+                    cand_s = float(cand.get("score", 40.0))
+                else:
+                    cand_t = str(cand)
+                    cand_s = 40.0
+                if cand_t and cand_t.strip():
+                    all_ocr_sources.append((cand_t, cand_s))
 
-            enterprise_name = (
-                self._clean_udyam_enterprise_name(
-                    enterprise_name
-                )
+        name_candidates: list[tuple[str, float]] = []
+        for src_text, src_score in all_ocr_sources:
+            raw_name = self._find_label_value(
+                src_text,
+                name_labels,
+                stop_name_labels,
             )
+            if raw_name:
+                cleaned_name = self._clean_udyam_enterprise_name(raw_name)
+                if cleaned_name and len(cleaned_name) >= 3:
+                    name_candidates.append((cleaned_name, src_score))
 
-            if enterprise_name:
-                result["enterprise_name"] = (
-                    enterprise_name
+        if name_candidates:
+            counts: dict[str, int] = {}
+            for name_val, _ in name_candidates:
+                counts[name_val] = counts.get(name_val, 0) + 1
+
+            scored_names: list[tuple[float, str]] = []
+            for name_val, src_score in name_candidates:
+                sc = self._score_udyam_enterprise_name_candidate(
+                    name_val,
+                    src_score,
+                    counts.get(name_val, 1),
                 )
+                scored_names.append((sc, name_val))
 
+            scored_names.sort(key=lambda x: x[0], reverse=True)
+            best_sc, best_name = scored_names[0]
+            if best_sc > 0:
+                result["enterprise_name"] = best_name
+
+        # 3. Enterprise Type
         enterprise_type = self._find_label_value(
             text,
             (
@@ -2386,18 +2876,14 @@ class FieldExtractor:
             ),
         )
 
-        normalized_type = self._normalize_udyam_type(
-            enterprise_type
-        )
-
+        normalized_type = self._normalize_udyam_type(enterprise_type)
         if normalized_type:
             result["enterprise_type"] = normalized_type
 
+        # 4. Major Activity
         major_activity = self._find_label_value(
             text,
-            (
-                "major activity",
-            ),
+            ("major activity",),
             (
                 "major activity",
                 "social category",
@@ -2413,20 +2899,14 @@ class FieldExtractor:
             ),
         )
 
-        normalized_activity = (
-            self._normalize_major_activity(
-                major_activity
-            )
-        )
-
+        normalized_activity = self._normalize_major_activity(major_activity)
         if normalized_activity:
             result["major_activity"] = normalized_activity
 
+        # 5. Social Category
         social_category = self._find_label_value(
             text,
-            (
-                "social category",
-            ),
+            ("social category",),
             (
                 "social category",
                 "date of incorporation",
@@ -2441,15 +2921,11 @@ class FieldExtractor:
             ),
         )
 
-        normalized_social = (
-            self._normalize_social_category(
-                social_category
-            )
-        )
-
+        normalized_social = self._normalize_social_category(social_category)
         if normalized_social:
             result["social_category"] = normalized_social
 
+        # 6. Incorporation Date
         incorporation_value = self._find_label_value(
             text,
             (
@@ -2459,15 +2935,11 @@ class FieldExtractor:
             ),
         )
 
-        incorporation_date = self._normalize_date(
-            incorporation_value
-        )
-
+        incorporation_date = self._normalize_date(incorporation_value)
         if incorporation_date:
-            result["date_of_incorporation"] = (
-                incorporation_date
-            )
+            result["date_of_incorporation"] = incorporation_date
 
+        # 7. Udyam Registration Date
         udyam_registration_value = self._find_label_value(
             text,
             (
@@ -2476,154 +2948,58 @@ class FieldExtractor:
             ),
         )
 
-        udyam_registration_date = self._normalize_date(
-            udyam_registration_value
-        )
-
+        udyam_registration_date = self._normalize_date(udyam_registration_value)
         if udyam_registration_date:
-            result["udyam_registration_date"] = (
-                udyam_registration_date
-            )
+            result["udyam_registration_date"] = udyam_registration_date
 
-        enterprise_address = self._find_label_value(
-            text,
-            (
-                "enterprise address",
-                "official address of enterprise",
-            ),
-            (
-                "enterprise address",
-                "official address of enterprise",
-                "date of incorporation",
-                "date of incorporation / registration of enterprise",
-                "date of registration of enterprise",
-                "date of commencement",
-                "udyam registration date",
-                "nic",
-                "national industry classification",
-                "government e-market",
-                "gem",
-                "treds",
-                "national career service",
-                "ncs",
-                "district industries centre",
-                "msme-dfo",
-                "date of printing",
-                "date of udyam registration",
-                "mobile",
-                "mobile no",
-                "email",
-                "email id",
-            ),
-        )
-
-        if enterprise_address:
-
-            address_stop_patterns = (
-                r"\bMobile\s+No\.?\b",
-                r"\bMobile\b",
-                r"\bEmail\s+Id\b",
-                r"\bEmail\b",
-                r"\bNational\s+Industry\s+Classification\b",
-                r"\bNIC\s+Code\b",
-                r"\bAre\s+you\s+interested\b",
-                r"\bGovernment\s+e-Market\b",
-                r"\bGeM\b",
-                r"\bTReDS\b",
-                r"\bNational\s+Career\s+Service\b",
-                r"\bNCS\b",
-                r"\bDistrict\s+Industries\s+Centre\b",
-                r"\bMSME-DFO\b",
-                r"\bDate\s+of\s+Printing\b",
-                r"\bDate\s+of\s+Udyam\s+Registration\b",
-            )
-
-            for pattern in address_stop_patterns:
-                enterprise_address = re.split(
-                    pattern,
-                    enterprise_address,
-                    maxsplit=1,
-                    flags=re.IGNORECASE,
-                )[0]
-
-            address_match = re.search(
-                r"(enterprise\s+address|"
-                r"official\s+address\s+of\s+enterprise)"
-                r"\s*[:\-]?\s*"
-                r"([^\n]+)"
-                r"(?:\n\s*"
-                r"(?!"
-                r"(?:name\s+of\s+enterprise|"
-                r"enterprise\s+name|"
-                r"type\s+of\s+enterprise|"
-                r"enterprise\s+type|"
-                r"major\s+activity|"
-                r"social\s+category|"
-                r"date\s+of\s+incorporation|"
-                r"date\s+of\s+commencement|"
-                r"udyam\s+registration\s+date|"
-                r"nic\b|"
-                r"national\s+industry\s+classification|"
-                r"government\s+e-market|"
-                r"treds|"
-                r"district\s+industries\s+centre|"
-                r"msme-dfo|"
-                r"date\s+of\s+printing|"
-                r"mobile|"
-                r"email)"
-                r")"
-                r"([^\n]+))?",
-                text,
-                flags=re.IGNORECASE,
-            )
-
-            if address_match:
-
-                first_line = (
-                    address_match.group(2)
-                    or ""
+        # 8. Enterprise Address with sub-label cleaning & candidate scoring
+        address_candidates: list[tuple[float, str]] = []
+        for src_text, src_score in all_ocr_sources:
+            extracted_addr = self._extract_udyam_official_address(src_text)
+            if not extracted_addr:
+                # Fallback to _find_label_value extraction
+                raw_addr_val = self._find_label_value(
+                    src_text,
+                    (
+                        "enterprise address",
+                        "official address of enterprise",
+                    ),
+                    (
+                        "enterprise address",
+                        "official address of enterprise",
+                        "date of incorporation",
+                        "date of incorporation / registration of enterprise",
+                        "date of registration of enterprise",
+                        "date of commencement",
+                        "udyam registration date",
+                        "nic",
+                        "national industry classification",
+                        "government e-market",
+                        "gem",
+                        "treds",
+                        "national career service",
+                        "ncs",
+                        "district industries centre",
+                        "msme-dfo",
+                        "date of printing",
+                        "date of udyam registration",
+                        "mobile",
+                        "mobile no",
+                        "email",
+                        "email id",
+                    ),
                 )
+                if raw_addr_val:
+                    extracted_addr = self._clean_udyam_official_address(raw_addr_val)
 
-                continuation = (
-                    address_match.group(3)
-                    or ""
-                )
+            if extracted_addr and len(extracted_addr) >= 10:
+                sc = self._score_udyam_address_candidate(extracted_addr, src_score)
+                address_candidates.append((sc, extracted_addr))
 
-                combined = (
-                    f"{first_line} "
-                    f"{continuation}"
-                )
-
-                enterprise_address = (
-                    self._clean_value(combined)
-                )
-
-            else:
-                enterprise_address = (
-                    self._clean_value(
-                        enterprise_address
-                    )
-                )
-
-            for pattern in address_stop_patterns:
-                enterprise_address = re.split(
-                    pattern,
-                    enterprise_address,
-                    maxsplit=1,
-                    flags=re.IGNORECASE,
-                )[0].strip()
-
-            pin_match = re.search(
-                r"(\bPin\s*[:\-]?\s*\d{6}|\b\d{6}\b)",
-                enterprise_address,
-                re.IGNORECASE,
-            )
-            if pin_match:
-                enterprise_address = enterprise_address[:pin_match.end()].strip()
-
-            if enterprise_address:
-                result["enterprise_address"] = (
-                    enterprise_address
-                )
+        if address_candidates:
+            address_candidates.sort(key=lambda x: x[0], reverse=True)
+            best_addr_sc, best_addr = address_candidates[0]
+            if best_addr_sc > 0:
+                result["enterprise_address"] = best_addr
 
         return result

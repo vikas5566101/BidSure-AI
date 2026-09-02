@@ -3,6 +3,7 @@ from pathlib import Path
 from .pdf_extractor import extract_text_from_pdf
 from .ocr_service import (
     extract_text_from_image,
+    extract_text_and_candidates_from_image,
     extract_text_from_scanned_pdf,
 )
 
@@ -64,6 +65,7 @@ class DocumentLoader:
             - file_path
             - extraction_method
             - raw_text
+            - ocr_candidates
         """
 
         path = Path(file_path)
@@ -83,9 +85,10 @@ class DocumentLoader:
         # 2. Image → OCR
         # -----------------------------
 
+        ocr_candidates = []
         if extension in {".jpg", ".jpeg", ".png"}:
 
-            raw_text = extract_text_from_image(
+            raw_text, ocr_candidates = extract_text_and_candidates_from_image(
                 file_path
             )
 
@@ -113,6 +116,8 @@ class DocumentLoader:
                 )
 
                 extraction_method = "ocr_pdf"
+
+            ocr_candidates = [{"score": 100.0, "text": raw_text.strip(), "variant": extraction_method, "config": "default"}]
 
         # -----------------------------
         # 4. Unsupported file
@@ -144,4 +149,5 @@ class DocumentLoader:
             "file_path": str(path),
             "extraction_method": extraction_method,
             "raw_text": cleaned_text,
+            "ocr_candidates": ocr_candidates,
         }

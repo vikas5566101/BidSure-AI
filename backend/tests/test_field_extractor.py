@@ -753,3 +753,176 @@ def test_udyam_address_stops_before_email():
     assert "Email" not in addr
     assert "Mobile" not in addr
     assert "info@test.com" not in addr
+
+
+def test_real_gst2_legal_name_boundary_isolation():
+    extractor = FieldExtractor()
+    text = "1 Legal Name KRISHNANAND GE 2 Trae Name, ifany KRISHNANAND € 3. Constitution of Business Limited Liability Partnership"
+    res = extractor.extract_gst_fields(text)
+    assert res.get("legal_name") == "KRISHNANAND GE"
+
+
+def test_real_gst2_constitution_normalization():
+    extractor = FieldExtractor()
+    text = "3. Constitution of Business Limited Linbality Partnership"
+    res = extractor.extract_gst_fields(text)
+    assert res.get("constitution") == "Limited Liability Partnership"
+
+
+def test_alternate_ocr_candidate_selection_when_primary_incomplete():
+    extractor = FieldExtractor()
+    primary_text = "1 Legal Name ALPHA ENTERPRISES 2 Trade Name ALPHA ENTERPRISES"
+    candidates = [
+        {"score": 90.0, "text": primary_text},
+        {"score": 85.0, "text": "1 Legal Name ALPHA ENTERPRISES PRIVATE LIMITED\n2 Trade Name ALPHA ENTERPRISES"},
+    ]
+    res = extractor.extract_gst_fields(primary_text, ocr_candidates=candidates)
+    assert res.get("legal_name") == "ALPHA ENTERPRISES PRIVATE LIMITED"
+
+
+def test_alternate_ocr_candidate_no_fabrication():
+    extractor = FieldExtractor()
+    primary_text = "1 Legal Name SAMPLE GE 2 Trade Name SAMPLE GE"
+    candidates = [
+        {"score": 90.0, "text": primary_text},
+        {"score": 88.0, "text": "1 Legal Name SAMPLE GEORCOLOGIST LLP\n2 Trade Name SAMPLE GEORCOLOGIST LLP"},
+    ]
+    res = extractor.extract_gst_fields(primary_text, ocr_candidates=candidates)
+    assert res.get("legal_name") == "SAMPLE GEORCOLOGIST LLP"
+
+
+def test_no_alternate_candidate_safe_incomplete_result():
+    extractor = FieldExtractor()
+    primary_text = "1 Legal Name INCOMPLETE COMPANY 2 Trade Name INCOMPLETE COMPANY"
+    res = extractor.extract_gst_fields(primary_text, ocr_candidates=[])
+    assert res.get("legal_name") == "INCOMPLETE COMPANY"
+
+
+def test_alternate_ocr_trade_name_recovery_generic():
+    extractor = FieldExtractor()
+    primary_text = "1 Legal Name SAMPLE ENTERPRISE LLP 2 Trade Name, if any SAMPLE € “OLOGI Lup 3 Constitution Limited Liability Partnership"
+    candidates = [
+        {"score": 64.0, "text": primary_text},
+        {
+            "score": 63.0,
+            "text": "1 Legal Name SAMPLE ENTERPRISE LLP 2 Trade Name, if any SAMPLE ENTERPRISE LLP 3 Constitution Limited Liability Partnership",
+        },
+        {
+            "score": 62.0,
+            "text": "1 Legal Name SAMPLE ENTERPRISE LLP 2 Trade Name, if any SAMPLE ENTERPRISE LLP 3 Constitution Limited Liability Partnership",
+        },
+    ]
+    res = extractor.extract_gst_fields(primary_text, ocr_candidates=candidates)
+    assert res.get("trade_name") == "SAMPLE ENTERPRISE LLP"
+
+
+def test_pan_synthetic_layout_extraction_name_father_dob_pan():
+    extractor = FieldExtractor()
+    text = (
+        "INCOME TAX DEPARTMENT\n"
+        "GOVT OF INDIA\n"
+        "SAMPLE PERSON\n"
+        "PARENT NAME\n"
+        "22/11/1975\n"
+        "Permanent Account Number\n"
+        "ABCDE1234F"
+    )
+    res = extractor.extract_pan_fields(text)
+    assert res.get("name") == "SAMPLE PERSON"
+    assert res.get("father_name") == "PARENT NAME"
+    assert res.get("date_of_birth") == "22/11/1975"
+    assert res.get("pan") == "ABCDE1234F"
+
+
+def test_pan_header_noise_not_selected_as_father_name():
+    extractor = FieldExtractor()
+    text = (
+        "INCOME TAX DEPARTMENT GOVT OF INDIA "
+        "SAMPLE PERSON 22/11/1975 Permanent Account Number ABCDE1234F Signature"
+    )
+    res = extractor.extract_pan_fields(text)
+    assert res.get("name") == "SAMPLE PERSON"
+    assert "father_name" not in res or res.get("father_name") not in (
+        "INCOME TAX DEPARTMENT",
+        "GOVT OF INDIA",
+        "PERMANENT ACCOUNT NUMBER",
+        "SIGNATURE",
+    )
+
+
+def test_pan_candidate_dob_consensus_selection():
+    extractor = FieldExtractor()
+    primary_text = "GOVT OF INDIA SAMPLE PERSON PARENT NAME 22/01/1975 Permanent Account Number ABCDE1234F"
+    candidates = [
+        {"score": 50.0, "text": primary_text},
+        {"score": 45.0, "text": "GOVT OF INDIA SAMPLE PERSON PARENT NAME 22/11/1975 Permanent Account Number ABCDE1234F"},
+        {"score": 44.0, "text": "GOVT OF INDIA SAMPLE PERSON PARENT NAME 22/11/1975 Permanent Account Number ABCDE1234F"},
+        {"score": 43.0, "text": "GOVT OF INDIA SAMPLE PERSON PARENT NAME 22/11/1975 Permanent Account Number ABCDE1234F"},
+    ]
+    res = extractor.extract_pan_fields(primary_text, ocr_candidates=candidates)
+    assert res.get("date_of_birth") == "22/11/1975"
+
+
+def test_udyam_enterprise_name_boundary_ocr_artifact_cleaning():
+    extractor = FieldExtractor()
+    cleaned = extractor._clean_udyam_enterprise_name("SAMPLE ENTERPRISES «")
+    assert cleaned == "SAMPLE ENTERPRISES"
+
+    cleaned_guillemet = extractor._clean_udyam_enterprise_name("« SAMPLE ENTERPRISES »")
+    assert cleaned_guillemet == "SAMPLE ENTERPRISES"
+
+
+def test_udyam_enterprise_name_preserves_internal_punctuation():
+    extractor = FieldExtractor()
+    cleaned = extractor._clean_udyam_enterprise_name("SAMPLE ENTERPRISES (INDIA) PVT. LTD.")
+    assert cleaned == "SAMPLE ENTERPRISES (INDIA) PVT. LTD."
+
+
+def test_udyam_enterprise_name_alternate_ocr_recovery():
+    extractor = FieldExtractor()
+    primary_text = "Type of Enterprise MICRO Social Category GENERAL Date of Incorporation 01/01/2022"
+    candidates = [
+        {"score": 45.0, "text": "Name of Enterprise | SAMPLE BUSINESS SERVICES Type of Enterprise MICRO"},
+        {"score": 44.0, "text": "Name of Enterprise SAMPLE BUSINESS SERVICES Type of Enterprise MICRO"},
+        {"score": 42.0, "text": "Name of Enterprise [SAMPLE BUSINESS SERVICES] Type of Enterprise MICRO"},
+    ]
+    res = extractor.extract_udyam_fields(primary_text, ocr_candidates=candidates)
+    assert res.get("enterprise_name") == "SAMPLE BUSINESS SERVICES"
+
+
+def test_udyam_noisy_enterprise_name_loses_to_clean_consensus_candidate():
+    extractor = FieldExtractor()
+    primary_text = "Name of Enterprise | S@MPLE €NTERPR1S3S Type of Enterprise MICRO"
+    candidates = [
+        {"score": 48.0, "text": "Name of Enterprise | SAMPLE BUSINESS SERVICES Type of Enterprise MICRO"},
+        {"score": 47.0, "text": "Name of Enterprise SAMPLE BUSINESS SERVICES Type of Enterprise MICRO"},
+    ]
+    res = extractor.extract_udyam_fields(primary_text, ocr_candidates=candidates)
+    assert res.get("enterprise_name") == "SAMPLE BUSINESS SERVICES"
+
+
+def test_udyam_official_address_table_delimiter_and_sublabel_cleaning():
+    extractor = FieldExtractor()
+    text = """Official address of Enterprise
+Flat/Door/Block No. OFFICE NO 102-103
+Name of Premises/Building FIRST FLOOR, SHREE SIDDHIVINAYAK SANKALP
+Village/Town PHASE 1
+Block WADACHIWADI ROAD
+Road/Street/Lane UNDRI
+City PUNE CITY
+State MAHARASHTRA
+District PUNE
+Pin 411060"""
+    res = extractor.extract_udyam_fields(text)
+    addr = res.get("enterprise_address", "")
+    assert "OFFICE NO 102-103" in addr
+    assert "FIRST FLOOR, SHREE SIDDHIVINAYAK SANKALP" in addr
+    assert "411060" in addr
+    for delimiter in ["[", "]", "|", "{", "}"]:
+        assert delimiter not in addr
+
+
+def test_udyam_incomplete_number_rejected():
+    extractor = FieldExtractor()
+    res = extractor.extract_udyam_fields("UDYAM-MH 4")
+    assert "udyam_number" not in res

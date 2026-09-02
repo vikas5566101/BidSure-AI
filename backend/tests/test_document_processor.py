@@ -642,3 +642,106 @@ def test_failed_extraction_returns_failed_contract():
     assert contract["errors"] == [
         "Document text extraction failed"
     ]
+
+
+def test_pan_without_father_name_passes_quality_validation():
+    """
+    Verify a PAN document without father_name passes local quality validation
+    without fabricating father_name or requiring human review.
+    """
+    class MockPanLoader:
+        def load_and_extract(self, file_path):
+            return {
+                "status": "SUCCESS",
+                "file_path": file_path,
+                "extraction_method": "ocr_image",
+                "raw_text": (
+                    "INCOME TAX DEPARTMENT GOVT OF INDIA\n"
+                    "SAMPLE PERSON\n"
+                    "15/08/1990\n"
+                    "Permanent Account Number\n"
+                    "ABCDE1234F"
+                ),
+                "ocr_candidates": [],
+            }
+
+    processor = DocumentProcessor(document_loader=MockPanLoader())
+    result = processor.process("mock_pan_no_father.png")
+
+    assert result["status"] == "SUCCESS"
+    assert result["classification"]["document_type"] == "PAN_CARD"
+    assert result["extracted_data"].get("pan") == "ABCDE1234F"
+    assert result["extracted_data"].get("name") == "SAMPLE PERSON"
+    assert result["extracted_data"].get("date_of_birth") == "15/08/1990"
+    assert "father_name" not in result["extracted_data"]
+
+    quality = result["extraction_quality"]
+    assert quality["status"] == "PASS"
+    assert quality["quality_score"] == 1.0
+    assert "father_name" not in quality["fields_requiring_review"]
+
+    verification = result["verification"]
+    assert verification["verification_status"] == "VERIFIED"
+    assert "father_name" not in verification["fields_requiring_review"]
+
+
+def test_pan_with_father_name_passes_quality_validation():
+    """
+    Verify a PAN document with a valid father_name extracts it into verified_fields.
+    """
+    class MockPanWithFatherLoader:
+        def load_and_extract(self, file_path):
+            return {
+                "status": "SUCCESS",
+                "file_path": file_path,
+                "extraction_method": "ocr_image",
+                "raw_text": (
+                    "INCOME TAX DEPARTMENT\n"
+                    "GOVT OF INDIA\n"
+                    "SAMPLE PERSON\n"
+                    "PARENT NAME\n"
+                    "15/08/1990\n"
+                    "Permanent Account Number\n"
+                    "ABCDE1234F"
+                ),
+                "ocr_candidates": [],
+            }
+
+    processor = DocumentProcessor(document_loader=MockPanWithFatherLoader())
+    result = processor.process("mock_pan_with_father.png")
+
+    assert result["status"] == "SUCCESS"
+    assert result["extracted_data"].get("father_name") == "PARENT NAME"
+    assert "father_name" in result["extraction_quality"]["verified_fields"]
+    assert result["extraction_quality"]["status"] == "PASS"
+
+
+def test_pan_with_uncertain_father_name_requires_review():
+    """
+    Verify a PAN document where father_name evidence is present but noisy/uncertain
+    places father_name into fields_requiring_review.
+    """
+    class MockPanUncertainFatherLoader:
+        def load_and_extract(self, file_path):
+            return {
+                "status": "SUCCESS",
+                "file_path": file_path,
+                "extraction_method": "ocr_image",
+                "raw_text": (
+                    "INCOME TAX DEPARTMENT\n"
+                    "GOVT OF INDIA\n"
+                    "SAMPLE PERSON\n"
+                    "Father's Name: pos junk\n"
+                    "15/08/1990\n"
+                    "Permanent Account Number\n"
+                    "ABCDE1234F"
+                ),
+                "ocr_candidates": [],
+            }
+
+    processor = DocumentProcessor(document_loader=MockPanUncertainFatherLoader())
+    result = processor.process("mock_pan_uncertain.png")
+
+    assert result["status"] == "SUCCESS"
+    assert "father_name" in result["extraction_quality"]["fields_requiring_review"]
+    assert result["extraction_quality"]["status"] == "REVIEW_REQUIRED"
