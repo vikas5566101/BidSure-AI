@@ -717,28 +717,10 @@ class FieldExtractor:
                 candidates.append(candidate)
 
         # --------------------------------------------------------
-        # Search 13-character candidate pattern (PAN + entity + Z + check)
-        # where 2-digit state code was omitted/clipped in OCR text.
-        # --------------------------------------------------------
-        short_pattern = re.compile(
-            r"(?<![A-Z0-9])"
-            r"[A-Z]{5}[0-9A-Z]{4}[A-Z][0-9A-Z]{3}"
-            r"(?![A-Z0-9])",
-            re.IGNORECASE,
-        )
-
-        for match in short_pattern.finditer(compact):
-            cand13 = match.group(0).upper()
-            # Try state codes (09 Uttar Pradesh, 06 Haryana, 27 Maharashtra, 07 Delhi, 19 West Bengal, 33 Tamil Nadu)
-            for state_code in ("09", "06", "27", "07", "19", "33", "24", "29", "36"):
-                expanded = state_code + cand13
-                if expanded not in candidates:
-                    candidates.append(expanded)
-
-
         # --------------------------------------------------------
         # Correct and return first structurally valid candidate.
         # --------------------------------------------------------
+
 
         for candidate in candidates:
 
@@ -1345,18 +1327,27 @@ class FieldExtractor:
 
         details: dict = {}
 
+        # Reusable OCR-tolerant label boundary components
+        loc_label = r"loca[a-z1l]{1,4}ty(?:\s*/?\s*sub\s*loca[a-z1l]{1,4}ty)?"
+        premises_label = r"(?:name\s+of\s+)?premises\s*/?\s*bu[il1]{1,3}ding"
+        road_label = r"road\s*/?\s*street"
+        landmark_label = r"(?:nearby\s+)?landm[a-z1l]{1,3}k"
+        city_label = r"c[it1]{1,2}y\s*/?\s*town(?:\s*/?\s*v[il1]{1,3}lage)?"
+        district_label = r"d[is1]{1,2}tr[ic1]{1,2}t"
+        state_label = r"state"
+        pin_label = r"pin\s*code"
+
         # Building number.
         match = re.search(
-            r"building\s*no\.?\s*/?\s*"
-            r"flat\s*no\.?\s*[:\-]?\s*"
-            r"(.*?)(?=\s+name\s+of\s+premises"
-            r"|\s+road\s*/?\s*street"
-            r"|\s+nearby\s+landmark"
-            r"|\s+locality"
-            r"|\s+city\s*/?\s*town"
-            r"|\s+district"
-            r"|\s+state"
-            r"|\s+pin\s*code"
+            r"bu[il1]{1,3}ding\s*no\.?\s*/?\s*f[la1]{1,2}t\s*no\.?\s*[:\-]?\s*"
+            rf"(.*?)(?=\s+{premises_label}"
+            rf"|\s+{road_label}"
+            rf"|\s+{landmark_label}"
+            rf"|\s+{loc_label}"
+            rf"|\s+{city_label}"
+            rf"|\s+{district_label}"
+            rf"|\s+{state_label}"
+            rf"|\s+{pin_label}"
             r"|$)",
             address,
             flags=re.IGNORECASE,
@@ -1368,19 +1359,21 @@ class FieldExtractor:
             )
 
             if value:
-                details["building_number"] = value
+                # Strip trailing isolated single-letter noise tokens (e.g. "44 x a" -> "44")
+                value = re.sub(r"\s+[a-z](?:\s+[a-z])+$", "", value, flags=re.IGNORECASE).strip()
+                if value:
+                    details["building_number"] = value
 
         # Premises.
         match = re.search(
-            r"name\s+of\s+premises\s*/?\s*"
-            r"building\s*[:\-]?\s*"
-            r"(.*?)(?=\s+road\s*/?\s*street"
-            r"|\s+nearby\s+landmark"
-            r"|\s+locality"
-            r"|\s+city\s*/?\s*town"
-            r"|\s+district"
-            r"|\s+state"
-            r"|\s+pin\s*code"
+            rf"{premises_label}\s*[:\-]?\s*"
+            rf"(.*?)(?=\s+{road_label}"
+            rf"|\s+{landmark_label}"
+            rf"|\s+{loc_label}"
+            rf"|\s+{city_label}"
+            rf"|\s+{district_label}"
+            rf"|\s+{state_label}"
+            rf"|\s+{pin_label}"
             r"|$)",
             address,
             flags=re.IGNORECASE,
@@ -1396,13 +1389,13 @@ class FieldExtractor:
 
         # Road.
         match = re.search(
-            r"road\s*/?\s*street\s*[:\-]?\s*"
-            r"(.*?)(?=\s+nearby\s+landmark"
-            r"|\s+locality"
-            r"|\s+city\s*/?\s*town"
-            r"|\s+district"
-            r"|\s+state"
-            r"|\s+pin\s*code"
+            rf"{road_label}\s*[:\-]?\s*"
+            rf"(.*?)(?=\s+{landmark_label}"
+            rf"|\s+{loc_label}"
+            rf"|\s+{city_label}"
+            rf"|\s+{district_label}"
+            rf"|\s+{state_label}"
+            rf"|\s+{pin_label}"
             r"|$)",
             address,
             flags=re.IGNORECASE,
@@ -1418,12 +1411,12 @@ class FieldExtractor:
 
         # Landmark.
         match = re.search(
-            r"nearby\s+landmark\s*[:;\-]?\s*"
-            r"(.*?)(?=\s+locality"
-            r"|\s+city\s*/?\s*town"
-            r"|\s+district"
-            r"|\s+state"
-            r"|\s+pin\s*code"
+            rf"{landmark_label}\s*[:;\-]?\s*"
+            rf"(.*?)(?=\s+{loc_label}"
+            rf"|\s+{city_label}"
+            rf"|\s+{district_label}"
+            rf"|\s+{state_label}"
+            rf"|\s+{pin_label}"
             r"|$)",
             address,
             flags=re.IGNORECASE,
@@ -1439,11 +1432,11 @@ class FieldExtractor:
 
         # Locality.
         match = re.search(
-            r"locality\s*/?\s*sub\s*locality\s*[:\-]?\s*"
-            r"(.*?)(?=\s+city\s*/?\s*town"
-            r"|\s+district"
-            r"|\s+state"
-            r"|\s+pin\s*code"
+            rf"{loc_label}\s*[:\-]?\s*"
+            rf"(.*?)(?=\s+{city_label}"
+            rf"|\s+{district_label}"
+            rf"|\s+{state_label}"
+            rf"|\s+{pin_label}"
             r"|$)",
             address,
             flags=re.IGNORECASE,
@@ -1459,10 +1452,10 @@ class FieldExtractor:
 
         # City.
         match = re.search(
-            r"city\s*/?\s*town\s*/?\s*village\s*[:\-]?\s*"
-            r"(.*?)(?=\s+district"
-            r"|\s+state"
-            r"|\s+pin\s*code"
+            rf"{city_label}\s*[:\-]?\s*"
+            rf"(.*?)(?=\s+{district_label}"
+            rf"|\s+{state_label}"
+            rf"|\s+{pin_label}"
             r"|$)",
             address,
             flags=re.IGNORECASE,
@@ -1478,9 +1471,9 @@ class FieldExtractor:
 
         # District.
         match = re.search(
-            r"district\s*[:\-]?\s*"
-            r"(.*?)(?=\s+state"
-            r"|\s+pin\s*code"
+            rf"{district_label}\s*[:\-]?\s*"
+            rf"(.*?)(?=\s+{state_label}"
+            rf"|\s+{pin_label}"
             r"|$)",
             address,
             flags=re.IGNORECASE,
@@ -1496,8 +1489,8 @@ class FieldExtractor:
 
         # State.
         match = re.search(
-            r"state\s*[:\-]?\s*"
-            r"(.*?)(?=\s+pin\s*code|$)",
+            rf"{state_label}\s*[:\-]?\s*"
+            rf"(.*?)(?=\s+{pin_label}|$)",
             address,
             flags=re.IGNORECASE,
         )
@@ -1521,6 +1514,7 @@ class FieldExtractor:
             details["pin_code"] = match.group(1)
 
         return details
+
 
     # ============================================================
     # GST EXTRACTION

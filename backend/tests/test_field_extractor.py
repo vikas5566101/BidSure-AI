@@ -563,3 +563,36 @@ def test_constitution_trailing_table_symbol_cleaned():
 
     r1 = extractor.extract_gst_fields("Constitution of Business Proprietorship —s > =) | 5\nDate of Liability 01/07/2017")
     assert r1.get("constitution") == "Proprietorship"
+
+
+def test_ocr_corrupted_address_label_locality_boundary():
+    """
+    Verify that OCR spelling variations of 'Locality' (such as 'Locallty') act as
+    clean field boundaries, preventing landmark bleeding and enabling locality extraction.
+    """
+    extractor = FieldExtractor()
+
+    addr = "Address of Principal Place of Business Building No./Flat No.: 44 x a Name Of Premises/Building: AMBALA CANTT Road/Street: LUXMI NAGAR Nearby Landmark; BD Flour Mill Locallty/Sub Locality: Nishat Bagh City/Town/Village: Ambala District: Ambala State: Haryana PIN Code: 133001"
+    res = extractor.extract_gst_fields(addr)
+    details = res.get("address_details", {})
+
+    assert details.get("building_number") == "44"
+    assert details.get("landmark") == "BD Flour Mill"
+    assert details.get("locality") == "Nishat Bagh"
+    assert details.get("city") == "Ambala"
+
+
+
+def test_no_gstin_state_code_guessing():
+    """
+    Ensure missing 2-digit state codes in 13-character OCR fragments are NOT
+    synthesized/guessed to manufacture a 15-character GSTIN.
+    """
+    extractor = FieldExtractor()
+
+    # 13-character fragment (missing 2-digit state code)
+    text = "Registration Number: ABCDE1234F1Z5"
+    res = extractor.extract_gst_fields(text)
+
+    # Should not fabricate a 15-character GSTIN with guessed state code
+    assert res.get("gstin") is None
