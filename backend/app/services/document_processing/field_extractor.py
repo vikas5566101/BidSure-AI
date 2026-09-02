@@ -1771,32 +1771,33 @@ class FieldExtractor:
 
         value = value.strip()
 
-        value = re.sub(
-            r"^[^A-Za-z]+",
-            "",
-            value,
+        # Remove leading/trailing non-alphabetic characters
+        value = re.sub(r"^[^A-Za-z]+", "", value)
+        value = re.sub(r"[^A-Za-z]+$", "", value)
+
+        # Remove common document header / label noise words
+        header_noise_pattern = (
+            r"\b(?:INCOME|TAX|DEPARTMENT|GOVT|INDIA|PERMANENT|ACCOUNT|"
+            r"NUMBER|SIGNATURE|CARD|OFFICIAL|GOVERNMENT)\b"
         )
+        value = re.sub(header_noise_pattern, " ", value, flags=re.IGNORECASE)
 
-        value = re.sub(
-            r"\b(?:E|=|—|-|~)\b",
-            " ",
-            value,
-            flags=re.IGNORECASE,
-        )
+        # Clean noise punctuation/symbols
+        value = re.sub(r"\b(?:E|=|—|-|~)\b", " ", value, flags=re.IGNORECASE)
+        value = re.sub(r"[^A-Za-z.\s]", " ", value)
+        value = re.sub(r"\s+", " ", value).strip()
 
-        value = re.sub(
-            r"[^A-Za-z.\s]",
-            " ",
-            value,
-        )
+        if not value or len(value) < 2:
+            return None
 
-        value = re.sub(
-            r"\s+",
-            " ",
-            value,
-        ).strip()
+        # Reject single lowercase words (e.g. OCR artifacts like "eat", "pos")
+        if re.fullmatch(r"[a-z]{1,5}", value):
+            return None
 
-        if not value:
+        # Reject string if it consists only of isolated 1-2 char noise tokens
+        tokens = value.split()
+        valid_tokens = [t for t in tokens if len(t) > 2 or t.isupper()]
+        if not valid_tokens:
             return None
 
         return value
@@ -1812,15 +1813,10 @@ class FieldExtractor:
 
         result: dict = {}
 
-        normalized = re.sub(
-            r"\s+",
-            " ",
-            text,
-        ).strip()
-
+        # Date of birth extraction
         date_match = re.search(
             r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{4})\b",
-            normalized,
+            text,
         )
 
         dob = None
@@ -1832,6 +1828,46 @@ class FieldExtractor:
 
         if dob:
             result["date_of_birth"] = dob
+
+        # ------------------------------------------------------------
+        # PATH 1: Multi-line structural extraction (if text contains newlines)
+        # ------------------------------------------------------------
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        if len(lines) > 1:
+            govt_idx = -1
+            for i, line in enumerate(lines):
+                if re.search(r"GOVT\.?\s+OF\s+INDIA", line, re.IGNORECASE):
+                    govt_idx = i
+                    break
+
+            if govt_idx != -1:
+                candidate_lines = []
+                for line in lines[govt_idx + 1:]:
+                    if re.search(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{4})\b", line):
+                        break
+                    if re.search(r"\b(?:PERMANENT|ACCOUNT|NUMBER|SIGNATURE|CARD)\b", line, re.IGNORECASE):
+                        break
+                    cleaned = FieldExtractor._clean_pan_person_name(line)
+                    if cleaned:
+                        candidate_lines.append(cleaned)
+
+                if len(candidate_lines) >= 2:
+                    result["name"] = candidate_lines[0]
+                    result["father_name"] = candidate_lines[1]
+                    return result
+                elif len(candidate_lines) == 1:
+                    result["name"] = candidate_lines[0]
+                    return result
+
+        # ------------------------------------------------------------
+        # PATH 2: Layout extraction for collapsed single-line text
+        # (Without line breaks or explicit field labels, do NOT guess father_name boundary)
+        # ------------------------------------------------------------
+        normalized = re.sub(
+            r"\s+",
+            " ",
+            text,
+        ).strip()
 
         before_dob = normalized
 
@@ -1845,82 +1881,50 @@ class FieldExtractor:
         )
 
         if govt_match:
+            after_govt = before_dob[govt_match.end():].strip()
 
-            father_candidate = before_dob[
-                govt_match.end():
-            ]
-
-            father_candidate = (
-                FieldExtractor._clean_pan_person_name(
-                    father_candidate
-                )
-            )
-
-            if father_candidate:
-
-                father_candidate = re.sub(
-                    r"\b(?:Permanent|Account|Number)\b.*$",
-                    "",
-                    father_candidate,
-                    flags=re.IGNORECASE,
-                ).strip()
-
-                father_candidate = re.sub(
-                    r"\s+",
-                    " ",
-                    father_candidate,
-                ).strip()
-
-                if father_candidate:
-                    result["father_name"] = (
-                        father_candidate
-                    )
-
-        if govt_match:
-
-            before_govt = normalized[
-                :govt_match.start()
-            ]
-
-            before_govt = re.sub(
-                r".*?INCOME\s+TAX\s+DEPARTMENT",
+            after_govt = re.sub(
+                r"\b(?:Permanent|Account|Number|Signature)\b.*$",
                 "",
-                before_govt,
+                after_govt,
                 flags=re.IGNORECASE,
+            ).strip()
+
+            # Extract clean candidate name from segment after GOVT OF INDIA
+            # Without explicit line breaks or field labels, father_name must not be guessed
+            uppercase_blocks = []
+            matches = re.finditer(
+                r"\b([A-Z]{2,}(?:\s+[A-Z]{2,})+|[A-Z]{2,})\b",
+                after_govt,
             )
+            for m in matches:
+                block = m.group(1).strip()
+                if not re.search(r"\b(?:INCOME|TAX|DEPARTMENT|GOVT|INDIA|PERMANENT|ACCOUNT|NUMBER|SIGNATURE)\b", block, re.IGNORECASE):
+                    uppercase_blocks.append(block)
 
-            name_candidate = (
-                FieldExtractor._clean_pan_person_name(
-                    before_govt
-                )
-            )
+            if uppercase_blocks:
+                result["name"] = uppercase_blocks[0]
+            else:
+                cleaned = FieldExtractor._clean_pan_person_name(after_govt)
+                if cleaned:
+                    result["name"] = cleaned
 
-            if name_candidate:
-
-                name_candidate = re.sub(
-                    r"^[=:\-~\s]+",
+            if "name" not in result:
+                before_govt = normalized[:govt_match.start()]
+                before_govt = re.sub(
+                    r".*?INCOME\s+TAX\s+DEPARTMENT",
                     "",
-                    name_candidate,
-                )
-
-                name_candidate = re.sub(
-                    r"\s+",
-                    " ",
-                    name_candidate,
-                ).strip()
-
-                name_candidate = re.sub(
-                    r"\b(?:PERMANENT|ACCOUNT|NUMBER|GOVT|"
-                    r"INDIA|INCOME|TAX|DEPARTMENT)\b.*$",
-                    "",
-                    name_candidate,
+                    before_govt,
                     flags=re.IGNORECASE,
-                ).strip()
-
-                if name_candidate:
-                    result["name"] = name_candidate
+                )
+                candidate = FieldExtractor._clean_pan_person_name(before_govt)
+                if candidate:
+                    result["name"] = candidate
 
         return result
+
+
+
 
     # ============================================================
     # PAN FIELD EXTRACTION

@@ -958,6 +958,45 @@ class DocumentVerifier:
     # =========================================================
 
     @classmethod
+    def _is_suspicious_pan_person_name(
+        cls,
+        value: object,
+    ) -> bool:
+        """
+        Detect whether a PAN person/father name candidate looks structurally suspicious.
+
+        Evaluates evidence signals:
+          - Purely lowercase non-name words (e.g. "eat", "pos")
+          - Generic document header label contamination (e.g. "INCOME TAX DEPARTMENT", "GOVT OF INDIA")
+          - Presence of isolated non-initial noise tokens mixed into the name
+        """
+        text = cls._clean(value)
+        if not text:
+            return True
+
+        # Purely lowercase single words are OCR artifacts
+        if re.fullmatch(r"[a-z]{1,6}", text):
+            return True
+
+        # Generic header label contamination
+        header_labels = (
+            r"INCOME\s+TAX",
+            r"GOVT\.?\s+OF\s+INDIA",
+            r"PERMANENT\s+ACCOUNT\s+NUMBER",
+            r"SIGNATURE",
+        )
+        for label in header_labels:
+            if re.search(r"\b" + label + r"\b", text, re.IGNORECASE):
+                return True
+
+        # Multi-word name containing lowercase OCR noise tokens
+        tokens = text.split()
+        if any(token.islower() and len(token) > 1 and token not in ("of", "de", "van", "der") for token in tokens):
+            return True
+
+        return False
+
+    @classmethod
     def _verify_pan(
         cls,
         data: dict,
@@ -1011,6 +1050,9 @@ class DocumentVerifier:
                 and not cls._looks_like_ocr_garbage(
                     value
                 )
+                and not cls._is_suspicious_pan_person_name(
+                    value
+                )
             ):
 
                 verified_fields.append(
@@ -1040,6 +1082,9 @@ class DocumentVerifier:
                 and not cls._looks_like_ocr_garbage(
                     value
                 )
+                and not cls._is_suspicious_pan_person_name(
+                    value
+                )
             ):
 
                 verified_fields.append(
@@ -1051,6 +1096,7 @@ class DocumentVerifier:
                 review_fields.append(
                     "father_name"
                 )
+
 
         # -----------------------------------------------------
         # Date of birth

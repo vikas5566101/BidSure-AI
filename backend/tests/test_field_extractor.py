@@ -596,3 +596,70 @@ def test_no_gstin_state_code_guessing():
 
     # Should not fabricate a 15-character GSTIN with guessed state code
     assert res.get("gstin") is None
+
+
+def test_pan_header_noise_rejection():
+    """
+    Verify header noise and lowercase single-word OCR artifacts (e.g. 'eat', 'pos')
+    are not extracted as PAN person name.
+    """
+    extractor = FieldExtractor()
+
+    text = "INCOME TAX DEPARTMENT eat GOVT. OF INDIA 22/11/1975 Permanent Account Number ABCDE1234F"
+    res = extractor.extract_pan_fields(text)
+    # 'eat' should not be extracted as name
+    assert res.get("name") != "eat"
+
+
+def test_pan_multi_line_layout_segmentation():
+    """
+    Verify multi-line PAN OCR text with line boundaries extracts person name and father name into separate fields.
+    """
+    extractor = FieldExtractor()
+
+    text = "INCOME TAX DEPARTMENT\nGOVT. OF INDIA\nVIKRAM SHARMA\nDEEPAK SHARMA\n15/08/1985\nPermanent Account Number ABCDE1234F"
+    res = extractor.extract_pan_fields(text)
+    assert res.get("name") == "VIKRAM SHARMA"
+    assert res.get("father_name") == "DEEPAK SHARMA"
+    assert res.get("date_of_birth") == "15/08/1985"
+    assert res.get("pan") == "ABCDE1234F"
+
+
+def test_pan_single_word_name_support():
+    """
+    Verify single-word legitimate uppercase names are supported and properly extracted.
+    """
+    extractor = FieldExtractor()
+
+    text = "INCOME TAX DEPARTMENT GOVT. OF INDIA ANAND 10/10/1990 Permanent Account Number ABCDE1234F"
+    res = extractor.extract_pan_fields(text)
+    assert res.get("name") == "ANAND"
+
+
+def test_pan_four_word_name_not_arbitrarily_split():
+    """
+    Verify a 4-word legitimate person name (e.g. MOHAMMED ABDUL RAHMAN KHAN)
+    is NOT arbitrarily split at the midpoint into name and father_name.
+    """
+    extractor = FieldExtractor()
+
+    text = "INCOME TAX DEPARTMENT GOVT. OF INDIA MOHAMMED ABDUL RAHMAN KHAN 15/08/1985 Permanent Account Number ABCDE1234F"
+    res = extractor.extract_pan_fields(text)
+
+    # Name must remain intact, NOT split into MOHAMMED ABDUL / RAHMAN KHAN
+    assert res.get("name") == "MOHAMMED ABDUL RAHMAN KHAN"
+    assert res.get("father_name") is None
+
+
+def test_pan_four_word_name_with_punctuation_separator_not_split():
+    """
+    Verify a legitimate 4-word person name containing punctuation/noise separators
+    (e.g. MOHAMMED ABDUL, RAHMAN KHAN) is NOT arbitrarily split into father_name.
+    """
+    extractor = FieldExtractor()
+
+    text = "INCOME TAX DEPARTMENT GOVT. OF INDIA MOHAMMED ABDUL, RAHMAN KHAN 15/08/1985 Permanent Account Number ABCDE1234F"
+    res = extractor.extract_pan_fields(text)
+
+    # Candidate name must be intact or first block, and father_name MUST be None
+    assert res.get("father_name") is None
