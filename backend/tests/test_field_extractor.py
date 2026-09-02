@@ -663,3 +663,93 @@ def test_pan_four_word_name_with_punctuation_separator_not_split():
 
     # Candidate name must be intact or first block, and father_name MUST be None
     assert res.get("father_name") is None
+
+
+def test_pan_name_truncated_at_date_of_birth_boundary():
+    extractor = FieldExtractor()
+    text = "Name Sample Kumar // Date of Birth 01/01/2002 Permanent Account Number ABCDE1234F"
+    res = extractor.extract_pan_fields(text)
+    assert res.get("name") == "Sample Kumar"
+    assert res.get("date_of_birth") == "01/01/2002"
+
+
+def test_pan_name_truncated_at_clear_separator():
+    extractor = FieldExtractor()
+    text = "Name Sample Kumar // vist ferf24 Date of Birth 01/01/2002"
+    res = extractor.extract_pan_fields(text)
+    assert res.get("name") == "Sample Kumar"
+
+
+def test_pan_card_without_father_name_field_does_not_fabricate_father_name():
+    extractor = FieldExtractor()
+    text = "INCOME TAX DEPARTMENT GOVT. OF INDIA Name Sample Kumar Date of Birth 01/01/2002 Permanent Account Number ABCDE1234F"
+    res = extractor.extract_pan_fields(text)
+    assert res.get("name") == "Sample Kumar"
+    assert res.get("father_name") is None
+
+
+def test_udyam_enterprise_name_stops_at_owner_name():
+    extractor = FieldExtractor()
+    text = "Name of Enterprise | HAPPY BABIES CARE Owner Name | SMT SHWETA SUDHIR PANDEY"
+    res = extractor.extract_udyam_fields(text)
+    assert res.get("enterprise_name") == "HAPPY BABIES CARE"
+
+
+def test_udyam_enterprise_name_stops_at_pan_gstin_email_mobile():
+    extractor = FieldExtractor()
+    text = "Name of Enterprise | HAPPY BABIES CARE PAN | BKJPP3315D Do you have GSTIN | Exempted Email Id | happy@test.com Mobile No. | 9876543210"
+    res = extractor.extract_udyam_fields(text)
+    assert res.get("enterprise_name") == "HAPPY BABIES CARE"
+
+
+def test_udyam_address_stops_at_national_industry_classification():
+    extractor = FieldExtractor()
+    text = "Official Address of Enterprise UNDRI PUNE 411060 National Industry Classification Code(S) 96 - Other personal service"
+    res = extractor.extract_udyam_fields(text)
+    assert "National Industry Classification" not in res.get("enterprise_address", "")
+    assert "UNDRI PUNE 411060" in res.get("enterprise_address", "")
+
+
+def test_udyam_address_stops_at_downstream_sections():
+    extractor = FieldExtractor()
+    text = "Enterprise Address UNDRI PUNE 411060 Government e-Market (GeM) Portal No Date of Printing 31/03/2023"
+    res = extractor.extract_udyam_fields(text)
+    assert "Government e-Market" not in res.get("enterprise_address", "")
+    assert "Date of Printing" not in res.get("enterprise_address", "")
+
+
+def test_udyam_number_handles_spacing_and_hyphen_variation():
+    extractor = FieldExtractor()
+    text1 = "Udyam Registration Number : UDYAM MH 26 0428912"
+    text2 = "U DYAM-MH-26-0428912"
+    assert extractor.extract_udyam_fields(text1).get("udyam_number") == "UDYAM-MH-26-0428912"
+    assert extractor.extract_udyam_fields(text2).get("udyam_number") == "UDYAM-MH-26-0428912"
+
+
+def test_udyam_number_invalid_candidate_rejected():
+    extractor = FieldExtractor()
+    text = "UDYAM-12-34-5678901 INVALID STRING UDYAM-XX-YY"
+    res = extractor.extract_udyam_fields(text)
+    assert res.get("udyam_number") is None
+
+
+def test_udyam_address_stops_at_pin_before_mobile():
+    extractor = FieldExtractor()
+    text = "Official Address of Enterprise UNDRI PUNE CITY MAHARASHTRA District PUNE . Pin : 411060 Mobile 9326656062 Email: happybabiescare@gmail.com"
+    res = extractor.extract_udyam_fields(text)
+    addr = res.get("enterprise_address", "")
+    assert "Mobile" not in addr
+    assert "9326656062" not in addr
+    assert "Email" not in addr
+    assert "happybabiescare" not in addr
+    assert addr.endswith("Pin : 411060") or addr.endswith("411060")
+
+
+def test_udyam_address_stops_before_email():
+    extractor = FieldExtractor()
+    text = "Enterprise Address 123 MAIN ROAD CITY Pin 123456 Email Id info@test.com Mobile No. 9999999999"
+    res = extractor.extract_udyam_fields(text)
+    addr = res.get("enterprise_address", "")
+    assert "Email" not in addr
+    assert "Mobile" not in addr
+    assert "info@test.com" not in addr

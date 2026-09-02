@@ -262,3 +262,15 @@ def test_ambiguity_threshold_boundary():
     assert result["second_best_score"] == 0.50
     assert result["score_difference"] == 0.10
     assert result["ambiguity"] is False
+
+
+def test_udyam_classification_breakdown_documented():
+    text = """
+    UDYAM REGISTRATION CERTIFICATE
+    UDYAM REGISTRATION NUMBER UDYAM-MH-26-0428912
+    NAME OF ENTERPRISE HAPPY BABIES CARE
+    """
+    classifier = DocumentClassifier()
+    result = classifier.classify(text)
+    assert result["document_type"] == "UDYAM_CERTIFICATE"
+    assert result["evidence_score"] >= 0.60

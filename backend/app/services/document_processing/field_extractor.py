@@ -1771,6 +1771,13 @@ class FieldExtractor:
 
         value = value.strip()
 
+        # Truncate at explicit DOB labels, explicit separators (//), or date patterns
+        value = re.split(
+            r"(?://|\bDate\s+of\s+Birth\b|\bDOB\b|\b\d{1,2}[/-]\d{1,2}[/-]\d{4}\b)",
+            value,
+            flags=re.IGNORECASE,
+        )[0].strip()
+
         # Remove leading/trailing non-alphabetic characters
         value = re.sub(r"^[^A-Za-z]+", "", value)
         value = re.sub(r"[^A-Za-z]+$", "", value)
@@ -1786,6 +1793,12 @@ class FieldExtractor:
         value = re.sub(r"\b(?:E|=|—|-|~)\b", " ", value, flags=re.IGNORECASE)
         value = re.sub(r"[^A-Za-z.\s]", " ", value)
         value = re.sub(r"\s+", " ", value).strip()
+
+        # Pop trailing isolated lowercase / non-uppercase noise tokens
+        tokens = value.split()
+        while tokens and (tokens[-1].islower() or (len(tokens[-1]) <= 2 and not tokens[-1].isupper())):
+            tokens.pop()
+        value = " ".join(tokens).strip()
 
         if not value or len(value) < 2:
             return None
@@ -1962,7 +1975,9 @@ class FieldExtractor:
         )
 
         if name:
-            result["name"] = self._clean_value(name)
+            cleaned_name = self._clean_pan_person_name(name)
+            if cleaned_name:
+                result["name"] = cleaned_name
 
         father_name = self._find_label_value(
             text,
@@ -2135,7 +2150,7 @@ class FieldExtractor:
                 return corrected
 
         loose_candidates = re.findall(
-            r"\bUDYAM[-\s]?[A-Z]{2}[-\s]?"
+            r"\bU?\s*DYAM[-\s]?[A-Z]{2}[-\s]?"
             r"\d{2}[-\s]?[A-Z0-9]{7}\b",
             text,
             flags=re.IGNORECASE,
@@ -2143,9 +2158,16 @@ class FieldExtractor:
 
         for candidate in loose_candidates:
 
+            standardized = re.sub(
+                r"^U\s*DYAM",
+                "UDYAM",
+                candidate,
+                flags=re.IGNORECASE,
+            )
+
             corrected = (
                 FieldExtractor._correct_udyam_candidate(
-                    candidate
+                    standardized
                 )
             )
 
@@ -2252,34 +2274,32 @@ class FieldExtractor:
         if not value:
             return ""
 
-        value = re.split(
+        stop_patterns = (
             r"\[\s*SNo\.?",
-            value,
-            maxsplit=1,
-            flags=re.IGNORECASE,
-        )[0]
-
-        value = re.split(
             r"\bSNo\.?\s*\|",
-            value,
-            maxsplit=1,
-            flags=re.IGNORECASE,
-        )[0]
-
-        value = re.split(
             r"\bClassification\s+Year\b",
-            value,
-            maxsplit=1,
-            flags=re.IGNORECASE,
-        )[0]
-
-        value = re.split(
             r"\bEnterprise\s+Type\s*\|",
-            value,
-            maxsplit=1,
-            flags=re.IGNORECASE,
-        )[0]
+            r"\bOwner\s+Name\b",
+            r"\bPAN\b",
+            r"\bDo\s+you\s+have\s+GSTIN\b",
+            r"\bEmail\s+Id\b",
+            r"\bMobile\s+No\b",
+            r"\bSocial\s+Category\b",
+            r"\bGender\b",
+            r"\bSpecially\s+Abled\b",
+            r"\bDate\s+of\s+Incorporation\b",
+            r"\bDate\s+of\s+Commencement\b",
+        )
 
+        for pattern in stop_patterns:
+            value = re.split(
+                pattern,
+                value,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0]
+
+        value = re.sub(r"[|\:_—\-]+$", "", value).strip()
         return FieldExtractor._clean_value(value)
 
     # ============================================================
@@ -2313,8 +2333,15 @@ class FieldExtractor:
                 "name of enterprise",
                 "enterprise name",
                 "type of enterprise",
-                "major activity",
+                "owner name",
+                "pan",
+                "do you have gstin",
+                "email id",
+                "mobile no",
                 "social category",
+                "gender",
+                "specially abled",
+                "major activity",
                 "date of incorporation",
                 "date of incorporation / registration of enterprise",
                 "date of registration of enterprise",
@@ -2474,10 +2501,50 @@ class FieldExtractor:
                 "udyam registration date",
                 "nic",
                 "national industry classification",
+                "government e-market",
+                "gem",
+                "treds",
+                "national career service",
+                "ncs",
+                "district industries centre",
+                "msme-dfo",
+                "date of printing",
+                "date of udyam registration",
+                "mobile",
+                "mobile no",
+                "email",
+                "email id",
             ),
         )
 
         if enterprise_address:
+
+            address_stop_patterns = (
+                r"\bMobile\s+No\.?\b",
+                r"\bMobile\b",
+                r"\bEmail\s+Id\b",
+                r"\bEmail\b",
+                r"\bNational\s+Industry\s+Classification\b",
+                r"\bNIC\s+Code\b",
+                r"\bAre\s+you\s+interested\b",
+                r"\bGovernment\s+e-Market\b",
+                r"\bGeM\b",
+                r"\bTReDS\b",
+                r"\bNational\s+Career\s+Service\b",
+                r"\bNCS\b",
+                r"\bDistrict\s+Industries\s+Centre\b",
+                r"\bMSME-DFO\b",
+                r"\bDate\s+of\s+Printing\b",
+                r"\bDate\s+of\s+Udyam\s+Registration\b",
+            )
+
+            for pattern in address_stop_patterns:
+                enterprise_address = re.split(
+                    pattern,
+                    enterprise_address,
+                    maxsplit=1,
+                    flags=re.IGNORECASE,
+                )[0]
 
             address_match = re.search(
                 r"(enterprise\s+address|"
@@ -2496,7 +2563,14 @@ class FieldExtractor:
                 r"date\s+of\s+commencement|"
                 r"udyam\s+registration\s+date|"
                 r"nic\b|"
-                r"national\s+industry\s+classification)"
+                r"national\s+industry\s+classification|"
+                r"government\s+e-market|"
+                r"treds|"
+                r"district\s+industries\s+centre|"
+                r"msme-dfo|"
+                r"date\s+of\s+printing|"
+                r"mobile|"
+                r"email)"
                 r")"
                 r"([^\n]+))?",
                 text,
@@ -2530,6 +2604,22 @@ class FieldExtractor:
                         enterprise_address
                     )
                 )
+
+            for pattern in address_stop_patterns:
+                enterprise_address = re.split(
+                    pattern,
+                    enterprise_address,
+                    maxsplit=1,
+                    flags=re.IGNORECASE,
+                )[0].strip()
+
+            pin_match = re.search(
+                r"(\bPin\s*[:\-]?\s*\d{6}|\b\d{6}\b)",
+                enterprise_address,
+                re.IGNORECASE,
+            )
+            if pin_match:
+                enterprise_address = enterprise_address[:pin_match.end()].strip()
 
             if enterprise_address:
                 result["enterprise_address"] = (

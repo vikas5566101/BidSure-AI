@@ -317,8 +317,9 @@ def _resize_for_ocr(
 # ============================================================
 
 def _calculate_ocr_confidence(
-    image: Image.Image,
+    image: Image.Image | None,
     config: str,
+    raw_text: str | None = None,
 ) -> tuple[float, str]:
     """
     Run OCR and calculate an approximate OCR quality score.
@@ -329,67 +330,73 @@ def _calculate_ocr_confidence(
         (confidence_score, extracted_text)
     """
 
-    data = pytesseract.image_to_data(
-        image,
-        config=config,
-        output_type=pytesseract.Output.DICT,
-    )
-
-    text_parts = []
-
-    confidences = []
-
-    text_values = data.get(
-        "text",
-        [],
-    )
-
-    confidence_values = data.get(
-        "conf",
-        [],
-    )
-
-    for (
-        text_value,
-        confidence_value,
-    ) in zip(
-        text_values,
-        confidence_values,
-    ):
-
-        text_value = (
-            text_value or ""
-        ).strip()
-
-        if not text_value:
-            continue
-
-        text_parts.append(
-            text_value
+    if raw_text is not None:
+        extracted_text = raw_text.strip()
+        confidences = [80.0]
+    else:
+        if image is None:
+            return 0.0, ""
+        data = pytesseract.image_to_data(
+            image,
+            config=config,
+            output_type=pytesseract.Output.DICT,
         )
 
-        try:
+        text_parts = []
 
-            confidence = float(
-                confidence_value
-            )
+        confidences = []
 
-        except (
-            ValueError,
-            TypeError,
+        text_values = data.get(
+            "text",
+            [],
+        )
+
+        confidence_values = data.get(
+            "conf",
+            [],
+        )
+
+        for (
+            text_value,
+            confidence_value,
+        ) in zip(
+            text_values,
+            confidence_values,
         ):
 
-            continue
+            text_value = (
+                text_value or ""
+            ).strip()
 
-        if confidence >= 0:
+            if not text_value:
+                continue
 
-            confidences.append(
-                confidence
+            text_parts.append(
+                text_value
             )
 
-    extracted_text = " ".join(
-        text_parts
-    ).strip()
+            try:
+
+                confidence = float(
+                    confidence_value
+                )
+
+            except (
+                ValueError,
+                TypeError,
+            ):
+
+                continue
+
+            if confidence >= 0:
+
+                confidences.append(
+                    confidence
+                )
+
+        extracted_text = " ".join(
+            text_parts
+        ).strip()
 
     if not confidences:
 
@@ -443,6 +450,15 @@ def _calculate_ocr_confidence(
     elif re.search(r"\bUDYAM-[A-Za-z]{2}-\d{2}-\d{7}\b", extracted_text, re.IGNORECASE):
         identifier_bonus = 15.0
 
+    # 3b. Proportional structured date evidence bonus (+3.0)
+    # A small tie-breaker bonus that prefers OCR candidates containing recognizable dates
+    # (e.g. DD/MM/YYYY) when two candidates are otherwise virtually identical in score.
+    # +3.0 is equivalent to a single keyword match, ensuring it cannot cause a poor candidate
+    # to beat a clean high-quality candidate.
+    date_bonus = 0.0
+    if re.search(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{4}\b", extracted_text):
+        date_bonus = 3.0
+
     # 4. Symbol noise / non-ASCII penalty
     total_len = max(1, len(extracted_text))
     garbage_chars = sum(
@@ -492,11 +508,13 @@ def _calculate_ocr_confidence(
             base_conf_component
             + keyword_component
             + identifier_bonus
+            + date_bonus
             + field_bonus
             - garbage_penalty
             - mangled_label_penalty,
         ),
     )
+
 
 
 
