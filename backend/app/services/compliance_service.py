@@ -17,7 +17,9 @@ from app.schemas.compliance_evaluation import (
 from app.services.evaluators.registry import (
     evaluator_registry,
 )
-
+from app.repositories.bid_submission_repository import (
+    bid_submission_repository,
+)
 
 class ComplianceService:
     """
@@ -35,7 +37,21 @@ class ComplianceService:
     ) -> ComplianceCheck:
 
         # --------------------------------------------------
-        # 1. Retrieve tender requirement
+        # 1. Retrieve bid submission
+        # --------------------------------------------------
+
+        submission = bid_submission_repository.get_by_id(
+            db,
+            request.bid_submission_id,
+        )
+
+        if submission is None:
+            raise ValueError(
+                "Bid submission not found: "
+                f"{request.bid_submission_id}"
+            )
+        # --------------------------------------------------
+        # 2. Retrieve tender requirement
         # --------------------------------------------------
 
         requirement = tender_requirement_repository.get_by_id(
@@ -50,7 +66,16 @@ class ComplianceService:
             )
 
         # --------------------------------------------------
-        # 2. Find evaluator
+        # 3. Validate tender relationship
+        # --------------------------------------------------
+
+        if requirement.tender_id != submission.tender_id:
+            raise ValueError(
+                "Tender requirement does not belong "
+                "to the bid submission's tender."
+            )
+        # --------------------------------------------------
+        # 4. Find evaluator
         # --------------------------------------------------
 
         evaluator = evaluator_registry.get(
@@ -58,7 +83,7 @@ class ComplianceService:
         )
 
         # --------------------------------------------------
-        # 3. Handle unsupported requirement type
+        # 4. Handle unsupported requirement type
         # --------------------------------------------------
 
         if evaluator is None:
@@ -81,7 +106,7 @@ class ComplianceService:
             )
 
         # --------------------------------------------------
-        # 4. Evaluate using registered evaluator
+        # 5. Evaluate using registered evaluator
         # --------------------------------------------------
 
         else:
@@ -117,7 +142,7 @@ class ComplianceService:
             )
 
         # --------------------------------------------------
-        # 5. Convert evaluation result into persistence schema
+        # 6. Convert evaluation result into persistence schema
         # --------------------------------------------------
 
         compliance_check_data = ComplianceCheckCreate(
@@ -131,7 +156,7 @@ class ComplianceService:
         )
 
         # --------------------------------------------------
-        # 6. Persist ComplianceCheck
+        # 7. Persist ComplianceCheck
         # --------------------------------------------------
 
         return compliance_check_repository.create(

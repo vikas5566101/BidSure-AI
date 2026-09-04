@@ -12,6 +12,10 @@ from app.schemas.tender_requirement import (
     TenderRequirementResponse,
 )
 
+from app.schemas.rag import RequirementExtractionRequest
+from app.services.rag.requirement_service import requirement_service
+from app.services.rag.service import rag_service
+from app.services.rag.generator_schema import RequirementExtractionResponse
 
 router = APIRouter(
     prefix="/tenders",
@@ -130,3 +134,40 @@ def get_tender_requirements(
         db,
         tender_id,
     )
+
+@router.post(
+    "/{tender_id}/requirements/extract",
+    response_model=RequirementExtractionResponse,
+)
+def extract_tender_requirements(
+    tender_id: int,
+    request: RequirementExtractionRequest,
+    db: Session = Depends(get_db),
+):
+    tender = tender_repository.get_by_id(db, tender_id)
+
+    if tender is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Tender not found: {tender_id}",
+        )
+
+    try:
+        rag_service.ingest_document(
+            text=request.text,
+            source_document=request.source_document,
+        )
+
+        return requirement_service.extract_and_persist_requirements(
+            db=db,
+            tender_id=tender_id,
+            query=request.query,
+            source_document=request.source_document,
+            top_k=request.top_k,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        )

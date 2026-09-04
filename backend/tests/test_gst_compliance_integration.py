@@ -1,3 +1,4 @@
+import uuid
 from app.database.session import SessionLocal
 from app.models.bidder import Bidder
 from app.models.tender import Tender
@@ -23,16 +24,18 @@ from app.services.evaluators.registry import (
 
 
 def create_test_data(db):
+    unique_id = uuid.uuid4().hex[:8].upper()
+
     bidder = Bidder(
-        company_name="GST Integration Test Company",
+        company_name=f"GST Integration Test Company {unique_id}",
         gstin="29ABCDE1234F1Z5",
-        pan="FGHIJ5678K",
-        udyam_number="UDYAM-GST-0001",
+        pan=f"F{unique_id[:4]}5678K",
+        udyam_number=f"UDYAM-GST-{unique_id}",
     )
 
     tender = Tender(
-        title="GST Integration Test Tender",
-        reference_number="GST-INT-001",
+        title=f"GST Integration Test Tender {unique_id}",
+        reference_number=f"GST-INT-{unique_id}",
         description="Temporary tender for GST integration testing.",
         status="DRAFT",
     )

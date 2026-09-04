@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
@@ -52,6 +52,16 @@ class TenderRequirement(Base):
         Text,
         nullable=True,
     )
+    source_document: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    source_chunk_ids: Mapped[list[str] | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+    
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime,

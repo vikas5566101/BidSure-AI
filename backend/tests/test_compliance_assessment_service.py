@@ -1,3 +1,6 @@
+import uuid
+
+from app.database.session import SessionLocal
 from app.database.session import SessionLocal
 
 from app.models.bidder import Bidder
@@ -17,16 +20,18 @@ def create_test_data(db, check_statuses=None):
     bid submission, and optional compliance checks.
     """
 
+    unique_id = uuid.uuid4().hex[:8].upper()
+
     bidder = Bidder(
-        company_name="Assessment Test Company",
-        gstin="29ASSESS1234A1Z5",
-        pan="FGHIJ5678K",
-        udyam_number="UDYAM-ASSESS-0001",
+        company_name=f"Assessment Test Company {unique_id}",
+        gstin=f"29ASSESS{unique_id[:4]}A1Z5",
+        pan=f"FGHIJ{unique_id[:4]}",
+        udyam_number=f"UDYAM-ASSESS-{unique_id}",
     )
 
     tender = Tender(
-        title="Assessment Test Tender",
-        reference_number="ASSESS-REF-001",
+        title=f"Assessment Test Tender {unique_id}",
+        reference_number=f"ASSESS-REF-{unique_id}",
         description="Temporary tender for assessment testing.",
         status="DRAFT",
     )
@@ -51,7 +56,6 @@ def create_test_data(db, check_statuses=None):
     checks = []
 
     if check_statuses:
-
         for index, status in enumerate(check_statuses, start=1):
 
             requirement = TenderRequirement(
@@ -84,7 +88,6 @@ def create_test_data(db, check_statuses=None):
             checks.append(check)
 
     return bidder, tender, submission, checks
-
 
 def cleanup_test_data(
     db,

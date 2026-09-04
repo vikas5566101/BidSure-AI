@@ -52,5 +52,31 @@ class TenderRequirementRepository:
             .all()
         )
 
+    def get_duplicate(
+        self,
+        db: Session,
+        tender_id: int,
+        requirement_data: TenderRequirementCreate,
+    ) -> TenderRequirement | None:
+
+        query = (
+            db.query(TenderRequirement)
+            .filter(
+                TenderRequirement.tender_id == tender_id,
+                TenderRequirement.requirement_type
+                == requirement_data.requirement_type,
+                TenderRequirement.requirement_name
+                == requirement_data.requirement_name,
+            )
+        )
+
+        if requirement_data.source_document is not None:
+            query = query.filter(
+                TenderRequirement.source_document
+                == requirement_data.source_document
+            )
+
+        return query.first()
+
 
 tender_requirement_repository = TenderRequirementRepository()

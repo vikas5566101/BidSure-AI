@@ -23,3 +23,32 @@ class BidDocumentResponse(BaseModel):
     uploaded_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class DocumentExtractionResponse(BaseModel):
+    """
+    API response for a document extraction attempt.
+
+    This exposes the persisted Document Intelligence result
+    without exposing SQLAlchemy internals.
+    """
+
+    id: int
+    bid_document_id: int
+    extraction_status: str
+
+    extracted_data: dict | None = None
+    extracted_text: str | None = None
+
+    confidence_score: float | None = None
+
+    extractor_name: str | None = None
+    extractor_version: str | None = None
+
+    error_message: str | None = None
+
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

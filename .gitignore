@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.venv311/
+venv/
+env/
+
+# Environment variables
+.env
+.env.*
+
+# Python runtime/database
+*.db
+
+# Chroma / vector database
+backend/data/chroma/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

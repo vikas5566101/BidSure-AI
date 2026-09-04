@@ -13,3 +13,12 @@ psycopg[binary]
 
 pytest
 httpx
+
+sentence-transformers
+chromadb
+
+google-genai
+
+PyMuPDF
+pytesseract
+Pillow

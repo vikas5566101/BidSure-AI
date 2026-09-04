@@ -339,3 +339,128 @@ def test_registered_evaluator_is_used():
         )
 
         db.close()
+
+def test_missing_bid_submission_returns_error():
+
+    db = SessionLocal()
+
+    bidder = None
+    tender = None
+    requirement = None
+    submission = None
+
+    try:
+        (
+            bidder,
+            tender,
+            requirement,
+            submission,
+        ) = create_test_data(db)
+
+        request = ComplianceEvaluationRequest(
+            bid_submission_id=999999,
+            tender_requirement_id=requirement.id,
+            requirement_type=requirement.requirement_type,
+            requirement_name=requirement.requirement_name,
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="Bid submission not found",
+        ):
+            compliance_service.evaluate_requirement(
+                db,
+                request,
+            )
+
+    finally:
+        cleanup_test_data(
+            db,
+            bidder,
+            tender,
+            requirement,
+            submission,
+        )
+
+        db.close()
+
+
+def test_requirement_must_belong_to_submission_tender():
+
+    db = SessionLocal()
+
+    bidder = None
+    tender = None
+    requirement = None
+    submission = None
+
+    other_tender = None
+    other_requirement = None
+
+    try:
+        (
+            bidder,
+            tender,
+            requirement,
+            submission,
+        ) = create_test_data(db)
+
+        unique_id = uuid.uuid4().hex[:8].upper()
+
+        other_tender = Tender(
+            title=f"Other Tender {unique_id}",
+            reference_number=f"OTHER-REF-{unique_id}",
+            description="Temporary second tender.",
+            status="DRAFT",
+        )
+
+        db.add(other_tender)
+        db.commit()
+        db.refresh(other_tender)
+
+        other_requirement = TenderRequirement(
+            tender_id=other_tender.id,
+            requirement_type="TEST",
+            requirement_name="Other Requirement",
+            description="Requirement from another tender.",
+            is_required=True,
+        )
+
+        db.add(other_requirement)
+        db.commit()
+        db.refresh(other_requirement)
+
+        request = ComplianceEvaluationRequest(
+            bid_submission_id=submission.id,
+            tender_requirement_id=other_requirement.id,
+            requirement_type="TEST",
+            requirement_name="Other Requirement",
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="does not belong to the bid submission",
+        ):
+            compliance_service.evaluate_requirement(
+                db,
+                request,
+            )
+
+    finally:
+        if other_requirement is not None:
+            db.delete(other_requirement)
+
+        if other_tender is not None:
+            db.delete(other_tender)
+
+        db.commit()
+
+        cleanup_test_data(
+            db,
+            bidder,
+            tender,
+            requirement,
+            submission,
+        )
+
+        db.close()

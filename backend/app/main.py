@@ -10,10 +10,13 @@ from app.core.config import settings
 from app.database.base import Base
 from app.database.session import engine, get_db
 
+from fastapi.middleware.cors import CORSMiddleware
+
 from app.api.routes import (
     bid_documents,
     bid_submissions,
     bidders,
+    compliance,
     tenders,
 )
 
@@ -57,12 +60,22 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(bidders.router)
 app.include_router(tenders.router)
 app.include_router(bid_submissions.router)
 app.include_router(bid_documents.router)
-
+app.include_router(compliance.router)
 
 @app.get("/")
 def root():
